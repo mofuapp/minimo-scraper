@@ -246,6 +246,8 @@ if st.button(
     use_container_width=True
 ):
     with st.spinner("🔄 スクレイピング中... (数分かかる場合があります)"):
+        progress_bar = st.progress(0)
+        progress_label = st.empty()
         progress_area = st.empty()
         
         from scraper import scrape_minimo
@@ -253,14 +255,11 @@ if st.button(
         
         messages = []
         
-        def progress(msg):
+        def progress(msg, percent=0):
             messages.append(msg)
-            progress_area.text_area(
-                "進捗",
-                value="\n".join(messages[-20:]),
-                height=300,
-                disabled=True
-            )
+            progress_bar.progress(percent / 100)
+            progress_label.markdown(f"**進捗: {percent}%**")
+            progress_area.code("\n".join(messages[-20:]), language=None)
         
         try:
             # カテゴリ指定（空なら全て）

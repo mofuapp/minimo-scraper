@@ -10,6 +10,59 @@ from typing import Optional, Callable
 import urllib.parse
 
 
+class ProgressTracker:
+    """スクレイピング進捗を管理"""
+
+    def __init__(self, callback: Optional[Callable[[str, int], None]] = None):
+        self.callback = callback
+        self.listing_total = 1
+        self.listing_done = 0
+        self.detail_total = 0
+        self.detail_done = 0
+        self.message = ""
+
+    def configure_listing(self, total: int):
+        self.listing_total = max(total, 1)
+        self.listing_done = 0
+        self.detail_total = 0
+        self.detail_done = 0
+
+    def add_detail_total(self, count: int):
+        self.detail_total += count
+
+    def listing_step(self, message: str):
+        self.listing_done += 1
+        self.message = message
+        self._notify()
+
+    def detail_step(self, message: str):
+        self.detail_done += 1
+        self.message = message
+        self._notify()
+
+    def set_message(self, message: str):
+        self.message = message
+        self._notify()
+
+    @property
+    def percent(self) -> int:
+        listing_p = self.listing_done / self.listing_total
+        if self.detail_total == 0:
+            return min(int(listing_p * 99), 99)
+        detail_p = self.detail_done / self.detail_total
+        combined = listing_p * 0.7 + detail_p * 0.3
+        return min(int(combined * 100), 99)
+
+    def complete(self, message: str):
+        self.message = message
+        if self.callback:
+            self.callback(message, 100)
+
+    def _notify(self):
+        if self.callback:
+            self.callback(self.message, self.percent)
+
+
 # カテゴリ（検出用）
 CATEGORIES = {
     "nail": "ネイル",
@@ -38,21 +91,102 @@ SMALL_PREFECTURES = [
 
 
 def get_search_url(category: str = None, area: str = None) -> str:
-    """検索URLを生成（カテゴリ+エリア）"""
+    """検索URLを生成（カテゴリ+都道府県キーワード）"""
     base_url = "https://minimodel.jp/search?"
     params = []
-    
+
     if category:
         params.append(f"category={category}")
     if area:
+        # area= は結果が全国になるため keyword= を使用
         encoded_area = urllib.parse.quote(area)
-        params.append(f"area={encoded_area}")
-    
-    # 新着順でソート
+        params.append(f"keyword={encoded_area}")
+
     params.append("order=updated_datetime")
-    
+
     return base_url + "&".join(params) if params else base_url
 
+
+def normalize_prefecture(name: str) -> str:
+    """パンくず等の短い地名を都道府県名に正規化"""
+    if not name:
+        return ""
+    name = name.strip().split("\n")[0].strip()
+    if name in PREFECTURES:
+        return name
+    if name == "東京":
+        return "東京都"
+    for pref in PREFECTURES:
+        base = pref.replace("県", "").replace("府", "").replace("都", "")
+        if name == base:
+            return pref
+    return name
+
+
+def prefecture_matches(detected: str, target: str) -> bool:
+    """検出した都道府県が検索対象と一致するか"""
+    return normalize_prefecture(detected) == normalize_prefecture(target)
+
+
+async def extract_location_from_page(page: Page) -> dict:
+    """サロン詳細ページから都道府県・住所情報を取得"""
+    location = {"prefecture": "", "address": "", "station": ""}
+
+    try:
+        data = await page.evaluate(
+            """
+            () => {
+                const skip = new Set([
+                    'トップ', 'フォト', 'メニュー', '口コミ', '美容室', 'ネイル', 'マツエク',
+                    '眉毛サロン', 'エステ・リラク', 'エステ', 'カタログ', 'ネイルサロン',
+                    'マツエク・マツパサロン', '眉毛サロン・アイブロウ', 'エステサロン・リラクサロン'
+                ]);
+                const links = [...document.querySelectorAll('a')]
+                    .map(a => (a.innerText || '').trim().split('\\n')[0])
+                    .filter(Boolean);
+
+                const topIdx = links.indexOf('トップ');
+                let region = '';
+                let city = '';
+                if (topIdx >= 0) {
+                    for (let i = topIdx + 1; i < links.length && i < topIdx + 8; i++) {
+                        const t = links[i];
+                        if (skip.has(t) || t.includes('詳細') || t.length > 20) continue;
+                        if (!region) { region = t; continue; }
+                        if (!city && t !== region) { city = t; break; }
+                    }
+                }
+
+                const body = document.body.innerText || '';
+                let station = '';
+                const stationMatch = body.match(/([^\\n]{0,25}駅[^\\n]{0,25})/);
+                if (stationMatch) station = stationMatch[1].trim();
+
+                return { region, city, station, body };
+            }
+            """
+        )
+
+        region = data.get("region", "")
+        city = data.get("city", "")
+        station = data.get("station", "")
+        body = data.get("body", "")
+
+        location["prefecture"] = normalize_prefecture(region)
+        location["station"] = station
+
+        parts = [p for p in [location["prefecture"], city, station] if p]
+        location["address"] = " ".join(parts)
+
+        if not location["address"]:
+            zip_match = re.search(r"〒\d{3}-\d{4}[^\n]+", body)
+            if zip_match:
+                location["address"] = zip_match.group(0).strip()
+
+    except Exception:
+        pass
+
+    return location
 
 async def click_sort_newest(page: Page) -> bool:
     """新着順ボタンをクリック"""
@@ -198,45 +332,45 @@ async def extract_salons_with_urls(page: Page) -> list[dict]:
         return []
 
 
-async def get_salon_detail(page: Page, salon_url: str, prefecture: str) -> dict:
-    """サロン詳細を取得（電話番号はリンククリックで取得）"""
-    address = prefecture
+async def get_salon_detail(page: Page, salon_url: str, target_prefecture: str = "") -> dict:
+    """サロン詳細を取得（都道府県確認・電話番号は/telリンクから）"""
     phone = ""
-    
+    location = {"prefecture": "", "address": "", "station": ""}
+
     try:
-        # サロンページにアクセス
         await page.goto(salon_url, wait_until="domcontentloaded", timeout=15000)
         await page.wait_for_timeout(1000)
-        
-        body = await page.evaluate('document.body.innerText')
-        
-        # 住所情報（駅情報を探す）
-        match = re.search(r'([^\n]*駅[^\n]{0,20})', body)
-        if match:
-            address = f"{prefecture} {match.group(1).strip()}"
-        
-        # 電話番号リンクをクリック
+
+        location = await extract_location_from_page(page)
+
         contact_link = await page.query_selector('a[href$="/tel"]')
         if contact_link:
             await contact_link.click()
             await page.wait_for_timeout(1500)
-            
+
             tel_body = await page.evaluate('document.body.innerText')
-            
-            # 電話番号を探す（ハイフンなし10-11桁）
+
             phone_match = re.search(r'(\d{10,11})', tel_body)
             if phone_match:
                 phone = phone_match.group(1)
             else:
-                # ハイフンあり形式
                 phone_match = re.search(r'(\d{2,4}-\d{2,4}-\d{4})', tel_body)
                 if phone_match:
                     phone = phone_match.group(1)
-        
-    except Exception as e:
+
+    except Exception:
         pass
-    
-    return {"address": address, "phone": phone}
+
+    return {
+        "prefecture": location.get("prefecture", ""),
+        "address": location.get("address", ""),
+        "station": location.get("station", ""),
+        "phone": phone,
+        "matches_target": (
+            not target_prefecture
+            or prefecture_matches(location.get("prefecture", ""), target_prefecture)
+        ),
+    }
 
 
 async def scrape_prefecture(
@@ -244,7 +378,7 @@ async def scrape_prefecture(
     prefecture: str,
     max_favorites: int,
     existing_urls: set,
-    progress_callback: Optional[Callable],
+    progress: Optional[ProgressTracker],
     target_categories: list[str] = None,
     max_pages: int = 5
 ) -> list[dict]:
@@ -255,19 +389,20 @@ async def scrape_prefecture(
     # 検索するカテゴリ（ヘアは除外）
     search_categories = target_categories if target_categories else list(CATEGORIES.keys())
     
-    if progress_callback:
-        progress_callback(f"🔍 {prefecture}")
+    if progress:
+        progress.set_message(f"🔍 {prefecture}")
     
     try:
         total_salons = 0
+        found = 0
         
         # 各カテゴリごとに検索
         for cat in search_categories:
             cat_name = CATEGORIES.get(cat, cat)
             base_url = get_search_url(category=cat, area=prefecture)
             
-            if progress_callback:
-                progress_callback(f"  📂 {cat_name}")
+            if progress:
+                progress.set_message(f"  📂 {cat_name}")
             
             cat_salons = []
             
@@ -284,12 +419,14 @@ async def scrape_prefecture(
                 new_salons = [s for s in salons if s.get('url') and s['url'] not in [x.get('url') for x in cat_salons] and s['url'] not in existing_urls]
                 
                 if len(new_salons) == 0:
+                    if progress:
+                        progress.listing_step(f"    ページ{current_page}: データなし、終了")
                     break
                     
                 cat_salons.extend(new_salons)
                 
-                if progress_callback:
-                    progress_callback(f"    ページ{current_page}: {len(new_salons)}件 (累計{len(cat_salons)}件)")
+                if progress:
+                    progress.listing_step(f"    ページ{current_page}: {len(new_salons)}件 (累計{len(cat_salons)}件)")
                 
                 # 次のページがあるか確認
                 if current_page < max_pages:
@@ -298,46 +435,56 @@ async def scrape_prefecture(
                         break
             
             # お気に入り数でフィルターして結果に追加
+            matching = [
+                s for s in cat_salons
+                if s.get('url') and s['url'] not in existing_urls and s['favorites'] <= max_favorites
+            ]
+            if progress:
+                progress.add_detail_total(len(matching))
+
             found = 0
-            for salon in cat_salons:
+            for salon in matching:
                 favorites = salon['favorites']
                 name = salon['name']
-                salon_url = salon.get('url', '')
-                
-                if not salon_url or salon_url in existing_urls:
+                salon_url = salon['url']
+
+                detail = await get_salon_detail(page, salon_url, prefecture)
+
+                if not detail.get("matches_target"):
+                    if progress:
+                        detected = detail.get("prefecture") or "不明"
+                        progress.set_message(
+                            f"    ⏭️ {name[:20]} スキップ（{detected} ≠ {prefecture}）"
+                        )
                     continue
-                
-                if favorites <= max_favorites:
-                    found += 1
-                    if progress_callback:
-                        progress_callback(f"    ✨ {name[:20]} お気に入り: {favorites}")
-                    
-                    # 詳細取得
-                    detail = await get_salon_detail(page, salon_url, prefecture)
-                    
-                    results.append({
-                        "サロン名": name,
-                        "ジャンル": cat_name,
-                        "住所": detail.get("address", prefecture),
-                        "電話番号": detail.get("phone", ""),
-                        "サロンURL": salon_url,
-                        "いいね数": favorites,
-                        "取得日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    })
-                    
-                    existing_urls.add(salon_url)
+
+                found += 1
+                if progress:
+                    progress.detail_step(f"    ✨ {name[:20]} お気に入り: {favorites}")
+
+                results.append({
+                    "サロン名": name,
+                    "ジャンル": cat_name,
+                    "住所": detail.get("address") or prefecture,
+                    "電話番号": detail.get("phone", ""),
+                    "サロンURL": salon_url,
+                    "いいね数": favorites,
+                    "取得日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+
+                existing_urls.add(salon_url)
             
             total_salons += len(cat_salons)
-            if progress_callback:
-                progress_callback(f"    → {cat_name}: {found}件発見 (全{len(cat_salons)}件中)")
+            if progress:
+                progress.set_message(f"    → {cat_name}: {found}件発見 (全{len(cat_salons)}件中)")
         
         total = total_salons
-        if progress_callback:
-            progress_callback(f"📊 {prefecture}: {found}件発見 (全{total}件中)")
+        if progress:
+            progress.set_message(f"📊 {prefecture}: {found}件発見 (全{total}件中)")
                 
     except Exception as e:
-        if progress_callback:
-            progress_callback(f"⚠️ {prefecture}: エラー - {str(e)[:30]}")
+        if progress:
+            progress.set_message(f"⚠️ {prefecture}: エラー - {str(e)[:30]}")
     
     return results
 
@@ -374,7 +521,7 @@ async def scrape_category_nationwide(
     category: str,
     max_favorites: int,
     existing_urls: set,
-    progress_callback: Optional[Callable],
+    progress: Optional[ProgressTracker],
     max_pages: int = 10
 ) -> list[dict]:
     """カテゴリ全国検索（新着順・ページネーション対応）"""
@@ -383,8 +530,8 @@ async def scrape_category_nationwide(
     category_name = CATEGORIES.get(category, category)
     base_url = get_search_url(category=category)
     
-    if progress_callback:
-        progress_callback(f"🌏 全国検索: {category_name}")
+    if progress:
+        progress.set_message(f"🌏 全国検索: {category_name}")
     
     try:
         all_salons = []
@@ -399,8 +546,8 @@ async def scrape_category_nationwide(
             # 最初のページのみ新着順に切り替え
             if current_page == 1:
                 sorted_ok = await click_sort_newest(page)
-                if progress_callback and sorted_ok:
-                    progress_callback(f"  → 新着順に切り替え完了")
+                if progress and sorted_ok:
+                    progress.set_message(f"  → 新着順に切り替え完了")
             
             salons = await extract_salons_with_urls(page)
             
@@ -408,65 +555,66 @@ async def scrape_category_nationwide(
             new_salons = [s for s in salons if s.get('url') and s['url'] not in [x.get('url') for x in all_salons]]
             
             if len(new_salons) == 0:
-                if progress_callback:
-                    progress_callback(f"  → ページ {current_page}: データなし、終了")
+                if progress:
+                    progress.listing_step(f"  → ページ {current_page}: データなし、終了")
                 break
                 
             all_salons.extend(new_salons)
             
-            if progress_callback:
-                progress_callback(f"  ページ {current_page}: {len(new_salons)}件 (累計{len(all_salons)}件)")
+            if progress:
+                progress.listing_step(f"  ページ {current_page}: {len(new_salons)}件 (累計{len(all_salons)}件)")
             
             # 次のページがあるか確認
             if current_page < max_pages:
                 has_next = await has_more_pages(page, current_page)
                 if not has_next:
-                    if progress_callback:
-                        progress_callback(f"  → 最終ページ")
+                    if progress:
+                        progress.set_message(f"  → 最終ページ")
                     break
         
+        matching = [
+            s for s in all_salons
+            if s.get('url') and s['url'] not in existing_urls and s['favorites'] <= max_favorites
+        ]
+        if progress:
+            progress.add_detail_total(len(matching))
+
         found = 0
-        for salon in all_salons:
+        for salon in matching:
             favorites = salon['favorites']
             name = salon['name']
-            salon_url = salon.get('url', '')
+            salon_url = salon['url']
             genre = salon.get('genre', '')
-            
-            if not salon_url or salon_url in existing_urls:
-                continue
-            
-            if favorites <= max_favorites:
-                found += 1
-                if progress_callback:
-                    progress_callback(f"✨ {name[:20]} ({genre}) お気に入り: {favorites}")
-                
-                # 詳細取得
-                detail = await get_salon_detail(page, salon_url, "")
-                
-                results.append({
-                    "サロン名": name,
-                    "ジャンル": category_name,
-                    "住所": detail.get("address", ""),
-                    "電話番号": detail.get("phone", ""),
-                    "サロンURL": salon_url,
-                    "いいね数": favorites,
-                    "取得日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
-                
-                existing_urls.add(salon_url)
-                
-                # 検索ページに戻る
-                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                await page.wait_for_timeout(1000)
-                await click_sort_newest(page)
+
+            detail = await get_salon_detail(page, salon_url, "")
+
+            found += 1
+            if progress:
+                progress.detail_step(f"✨ {name[:20]} ({genre}) お気に入り: {favorites}")
+
+            results.append({
+                "サロン名": name,
+                "ジャンル": category_name,
+                "住所": detail.get("address", ""),
+                "電話番号": detail.get("phone", ""),
+                "サロンURL": salon_url,
+                "いいね数": favorites,
+                "取得日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+            existing_urls.add(salon_url)
+
+            await page.goto(page_url, wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(1000)
+            await click_sort_newest(page)
         
         total = len(all_salons)
-        if progress_callback:
-            progress_callback(f"📊 {category_name}全国: {found}件発見 (全{total}件中)")
+        if progress:
+            progress.set_message(f"📊 {category_name}全国: {found}件発見 (全{total}件中)")
                 
     except Exception as e:
-        if progress_callback:
-            progress_callback(f"⚠️ {category_name}: エラー - {str(e)[:30]}")
+        if progress:
+            progress.set_message(f"⚠️ {category_name}: エラー - {str(e)[:30]}")
     
     return results
 
@@ -493,6 +641,14 @@ async def scrape_minimo(
     # カテゴリが指定されていない場合、全カテゴリ
     if categories is None:
         categories = list(CATEGORIES.keys())
+
+    tracker = None
+    if progress_callback:
+        listing_total = len(categories) * max_pages
+        if not nationwide:
+            listing_total *= len(prefectures)
+        tracker = ProgressTracker(progress_callback)
+        tracker.configure_listing(listing_total)
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -511,7 +667,7 @@ async def scrape_minimo(
                         category=cat,
                         max_favorites=max_likes,
                         existing_urls=existing_urls,
-                        progress_callback=progress_callback,
+                        progress=tracker,
                         max_pages=max_pages
                     )
                     all_results.extend(results)
@@ -523,7 +679,7 @@ async def scrape_minimo(
                         prefecture=pref,
                         max_favorites=max_likes,
                         existing_urls=existing_urls,
-                        progress_callback=progress_callback,
+                        progress=tracker,
                         target_categories=categories,
                         max_pages=max_pages
                     )
@@ -532,8 +688,10 @@ async def scrape_minimo(
         finally:
             await browser.close()
     
-    if progress_callback:
-        progress_callback(f"✅ 完了！ 合計 {len(all_results)} 件")
+    if tracker:
+        tracker.complete(f"✅ 完了！ 合計 {len(all_results)} 件")
+    elif progress_callback:
+        progress_callback(f"✅ 完了！ 合計 {len(all_results)} 件", 100)
     
     return all_results
 
@@ -558,8 +716,8 @@ def run_scraper(
 
 
 if __name__ == "__main__":
-    def print_progress(msg):
-        print(msg)
+    def print_progress(msg, percent=0):
+        print(f"[{percent:3d}%] {msg}")
     
     print("=== テスト開始 ===")
     results = run_scraper(
