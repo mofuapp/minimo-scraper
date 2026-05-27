@@ -87,50 +87,59 @@ DATA_DIR = Path(__file__).parent / "data"
 DATA_FILE = DATA_DIR / "salons.csv"
 ICON_PATH = Path(__file__).parent / ".streamlit" / "app-icon.png"
 APPLE_ICON_PATH = Path(__file__).parent / ".streamlit" / "apple-touch-icon.png"
+ICON_GITHUB_URL = (
+    "https://raw.githubusercontent.com/mofuapp/minimo-scraper/main/"
+    ".streamlit/apple-touch-icon.png"
+)
 
 
-def inject_home_screen_icon() -> None:
+def get_page_icon() -> str:
+    """ページアイコン（ローカル優先、なければGitHub URL）"""
+    if APPLE_ICON_PATH.exists():
+        return str(APPLE_ICON_PATH)
+    return ICON_GITHUB_URL
+
+
+def inject_home_screen_icon(icon_url: str) -> None:
     """ホーム画面追加用のアイコン・タイトルを設定"""
-    icon_path = APPLE_ICON_PATH if APPLE_ICON_PATH.exists() else ICON_PATH
-    if not icon_path.exists():
-        return
-
-    import base64
-
-    icon_b64 = base64.b64encode(icon_path.read_bytes()).decode()
-    icon_url = f"data:image/png;base64,{icon_b64}"
     app_title = "ミニモスクレイパー"
+    safe_url = icon_url.replace("\\", "\\\\").replace('"', '\\"')
+
+    st.markdown(
+        f'<link rel="apple-touch-icon" href="{safe_url}">'
+        f'<link rel="apple-touch-icon-precomposed" href="{safe_url}">'
+        f'<meta name="apple-mobile-web-app-title" content="{app_title}">',
+        unsafe_allow_html=True,
+    )
 
     components.html(
         f"""
         <script>
         (function() {{
-            const doc = window.parent.document;
-            const iconUrl = "{icon_url}";
+            const iconUrl = "{safe_url}";
             const title = "{app_title}";
+            const docs = [];
+            try {{ docs.push(window.top.document); }} catch (e) {{}}
+            try {{ docs.push(window.parent.document); }} catch (e) {{}}
+            docs.push(document);
 
-            if (!doc.querySelector('link[rel="apple-touch-icon"]')) {{
-                const link = document.createElement('link');
-                link.rel = 'apple-touch-icon';
-                link.href = iconUrl;
-                doc.head.appendChild(link);
-            }}
-
-            let metaTitle = doc.querySelector('meta[name="apple-mobile-web-app-title"]');
-            if (!metaTitle) {{
-                metaTitle = document.createElement('meta');
-                metaTitle.name = 'apple-mobile-web-app-title';
-                doc.head.appendChild(metaTitle);
-            }}
-            metaTitle.content = title;
-
-            let metaCapable = doc.querySelector('meta[name="apple-mobile-web-app-capable"]');
-            if (!metaCapable) {{
-                metaCapable = document.createElement('meta');
-                metaCapable.name = 'apple-mobile-web-app-capable';
-                metaCapable.content = 'yes';
-                doc.head.appendChild(metaCapable);
-            }}
+            docs.forEach(function(doc) {{
+                if (!doc || !doc.head) return;
+                ["apple-touch-icon", "apple-touch-icon-precomposed"].forEach(function(rel) {{
+                    if (doc.querySelector('link[rel="' + rel + '"]')) return;
+                    const link = doc.createElement("link");
+                    link.rel = rel;
+                    link.href = iconUrl;
+                    doc.head.appendChild(link);
+                }});
+                let metaTitle = doc.querySelector('meta[name="apple-mobile-web-app-title"]');
+                if (!metaTitle) {{
+                    metaTitle = doc.createElement("meta");
+                    metaTitle.name = "apple-mobile-web-app-title";
+                    doc.head.appendChild(metaTitle);
+                }}
+                metaTitle.content = title;
+            }});
         }})();
         </script>
         """,
@@ -177,13 +186,14 @@ def add_new_salons(new_salons: list[dict], df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ページ設定
+_page_icon = get_page_icon()
 st.set_page_config(
     page_title="ミニモ サロンスクレイパー",
-    page_icon=str(ICON_PATH) if ICON_PATH.exists() else "💅",
+    page_icon=_page_icon,
     layout="wide"
 )
 
-inject_home_screen_icon()
+inject_home_screen_icon(ICON_GITHUB_URL)
 
 # タイトル
 st.title("💅 ミニモ サロンスクレイパー")
