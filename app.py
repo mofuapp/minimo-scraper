@@ -264,16 +264,17 @@ if st.button(
         try:
             # カテゴリ指定（空なら全て）
             cats = selected_categories if selected_categories else None
-            
-            results = asyncio.run(scrape_minimo(
-                categories=cats,
-                max_likes=max_likes,
-                existing_urls=existing_urls,
-                progress_callback=progress,
-                prefectures=search_prefectures,
-                max_pages=max_pages,
-                nationwide=nationwide_search
-            ))
+
+            with st.spinner("初回のみブラウザをセットアップ中...（1〜2分かかる場合があります）"):
+                results = asyncio.run(scrape_minimo(
+                    categories=cats,
+                    max_likes=max_likes,
+                    existing_urls=existing_urls,
+                    progress_callback=progress,
+                    prefectures=search_prefectures,
+                    max_pages=max_pages,
+                    nationwide=nationwide_search
+                ))
             
             if results:
                 df = add_new_salons(results, df)

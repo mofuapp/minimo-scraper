@@ -629,7 +629,10 @@ async def scrape_minimo(
     nationwide: bool = False
 ) -> list[dict]:
     """ミニモをスクレイピング（ページネーション対応）"""
-    
+    from playwright_setup import ensure_playwright_browsers
+
+    ensure_playwright_browsers()
+
     if existing_urls is None:
         existing_urls = set()
     
@@ -651,7 +654,10 @@ async def scrape_minimo(
         tracker.configure_listing(listing_total)
     
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
