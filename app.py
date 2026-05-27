@@ -85,6 +85,57 @@ def create_copy_button(df: pd.DataFrame, button_text: str = "📋 コピー"):
 # データファイルパス
 DATA_DIR = Path(__file__).parent / "data"
 DATA_FILE = DATA_DIR / "salons.csv"
+ICON_PATH = Path(__file__).parent / ".streamlit" / "app-icon.png"
+APPLE_ICON_PATH = Path(__file__).parent / ".streamlit" / "apple-touch-icon.png"
+
+
+def inject_home_screen_icon() -> None:
+    """ホーム画面追加用のアイコン・タイトルを設定"""
+    icon_path = APPLE_ICON_PATH if APPLE_ICON_PATH.exists() else ICON_PATH
+    if not icon_path.exists():
+        return
+
+    import base64
+
+    icon_b64 = base64.b64encode(icon_path.read_bytes()).decode()
+    icon_url = f"data:image/png;base64,{icon_b64}"
+    app_title = "ミニモスクレイパー"
+
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            const doc = window.parent.document;
+            const iconUrl = "{icon_url}";
+            const title = "{app_title}";
+
+            if (!doc.querySelector('link[rel="apple-touch-icon"]')) {{
+                const link = document.createElement('link');
+                link.rel = 'apple-touch-icon';
+                link.href = iconUrl;
+                doc.head.appendChild(link);
+            }}
+
+            let metaTitle = doc.querySelector('meta[name="apple-mobile-web-app-title"]');
+            if (!metaTitle) {{
+                metaTitle = document.createElement('meta');
+                metaTitle.name = 'apple-mobile-web-app-title';
+                doc.head.appendChild(metaTitle);
+            }}
+            metaTitle.content = title;
+
+            let metaCapable = doc.querySelector('meta[name="apple-mobile-web-app-capable"]');
+            if (!metaCapable) {{
+                metaCapable = document.createElement('meta');
+                metaCapable.name = 'apple-mobile-web-app-capable';
+                metaCapable.content = 'yes';
+                doc.head.appendChild(metaCapable);
+            }}
+        }})();
+        </script>
+        """,
+        height=0,
+    )
 
 
 def load_data() -> pd.DataFrame:
@@ -128,9 +179,11 @@ def add_new_salons(new_salons: list[dict], df: pd.DataFrame) -> pd.DataFrame:
 # ページ設定
 st.set_page_config(
     page_title="ミニモ サロンスクレイパー",
-    page_icon="💅",
+    page_icon=str(ICON_PATH) if ICON_PATH.exists() else "💅",
     layout="wide"
 )
+
+inject_home_screen_icon()
 
 # タイトル
 st.title("💅 ミニモ サロンスクレイパー")
