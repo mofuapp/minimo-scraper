@@ -133,49 +133,52 @@ async def extract_location_from_page(page: Page) -> dict:
     location = {"prefecture": "", "address": "", "station": ""}
 
     try:
-        data = await page.evaluate(
+        links = await page.evaluate(
             """
-            () => {
-                const skip = new Set([
-                    'トップ', 'フォト', 'メニュー', '口コミ', '美容室', 'ネイル', 'マツエク',
-                    '眉毛サロン', 'エステ・リラク', 'エステ', 'カタログ', 'ネイルサロン',
-                    'マツエク・マツパサロン', '眉毛サロン・アイブロウ', 'エステサロン・リラクサロン'
-                ]);
-                const links = [...document.querySelectorAll('a')]
-                    .map(a => (a.innerText || '').trim().split('\\n')[0])
-                    .filter(Boolean);
-
-                const topIdx = links.indexOf('トップ');
-                let region = '';
-                let city = '';
-                if (topIdx >= 0) {
-                    for (let i = topIdx + 1; i < links.length && i < topIdx + 8; i++) {
-                        const t = links[i];
-                        if (skip.has(t) || t.includes('詳細') || t.length > 20) continue;
-                        if (!region) { region = t; continue; }
-                        if (!city && t !== region) { city = t; break; }
-                    }
-                }
-
-                const body = document.body.innerText || '';
-                let station = '';
-                const stationMatch = body.match(/([^\\n]{0,25}駅[^\\n]{0,25})/);
-                if (stationMatch) station = stationMatch[1].trim();
-
-                return { region, city, station, body };
-            }
+            () => [...document.querySelectorAll('a')]
+                .map(a => (a.innerText || '').trim().split('\\n')[0])
+                .filter(Boolean)
             """
         )
 
-        region = data.get("region", "")
-        city = data.get("city", "")
-        station = data.get("station", "")
-        body = data.get("body", "")
+        prefecture = ""
+        city = ""
+        station = ""
 
-        location["prefecture"] = normalize_prefecture(region)
+        if "トップ" in links:
+            top_idx = links.index("トップ")
+            breadcrumb = links[top_idx + 1: top_idx + 10]
+
+            pref_idx = -1
+            for i, t in enumerate(breadcrumb):
+                if normalize_prefecture(t) in PREFECTURES:
+                    prefecture = normalize_prefecture(t)
+                    pref_idx = i
+                    break
+
+            if pref_idx >= 0:
+                for t in breadcrumb[pref_idx + 1:]:
+                    if "駅" in t:
+                        station = t
+                        break
+                    if (
+                        normalize_prefecture(t) not in PREFECTURES
+                        and len(t) <= 20
+                        and t not in {"フォト", "メニュー", "口コミ"}
+                    ):
+                        city = t
+
+        body = await page.evaluate("document.body.innerText")
+
+        if not station:
+            match = re.search(r"([^\n]{0,25}駅[^\n]{0,25})", body)
+            if match:
+                station = match.group(1).strip()
+
+        location["prefecture"] = prefecture
         location["station"] = station
 
-        parts = [p for p in [location["prefecture"], city, station] if p]
+        parts = [p for p in [prefecture, city, station] if p]
         location["address"] = " ".join(parts)
 
         if not location["address"]:
