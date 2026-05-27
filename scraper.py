@@ -69,6 +69,7 @@ CATEGORIES = {
     "eyelash": "マツエク・マツパ",
     "eyebrow": "眉毛",
     "relaxation": "エステ・リラク",
+    "other": "その他美容",
 }
 
 # 都道府県リスト

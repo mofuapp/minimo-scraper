@@ -207,7 +207,8 @@ category_options = {
     "nail": "💅 ネイル",
     "eyelash": "👁️ マツエク・マツパ",
     "eyebrow": "✨ 眉毛",
-    "relaxation": "🧖 エステ・リラク"
+    "relaxation": "🧖 エステ・リラク",
+    "other": "💫 その他美容",
 }
 selected_categories = st.sidebar.multiselect(
     "カテゴリ（空=全て）",
