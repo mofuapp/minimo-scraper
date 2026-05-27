@@ -11,10 +11,30 @@ import streamlit.components.v1 as components
 from scraper import CATEGORIES, PREFECTURES, SMALL_PREFECTURES
 
 
+def format_phone_for_spreadsheet(phone) -> str:
+    """スプレッドシート用に電話番号の先頭0を保持（'を付与）"""
+    if phone is None or (isinstance(phone, float) and pd.isna(phone)):
+        return ""
+    phone = str(phone).strip()
+    if not phone:
+        return ""
+    if phone.startswith("'"):
+        return phone
+    return f"'{phone}"
+
+
+def prepare_for_spreadsheet(df: pd.DataFrame) -> pd.DataFrame:
+    """コピー・CSV出力用に電話番号を整形"""
+    out = df.copy()
+    if "電話番号" in out.columns:
+        out["電話番号"] = out["電話番号"].apply(format_phone_for_spreadsheet)
+    return out
+
+
 def create_copy_button(df: pd.DataFrame, button_text: str = "📋 コピー"):
     """スプレッドシート貼り付け用のコピーボタンを作成"""
-    # タブ区切りテキストを作成（ヘッダー付き）
-    tsv_data = df.to_csv(sep='\t', index=False)
+    export_df = prepare_for_spreadsheet(df)
+    tsv_data = export_df.to_csv(sep='\t', index=False)
     # JavaScriptで使えるようにエスケープ
     escaped_data = tsv_data.replace('`', "'").replace('$', '')
     
@@ -335,7 +355,7 @@ if not df.empty:
     with col1:
         create_copy_button(filtered_df.sort_values("いいね数", ascending=True))
     with col2:
-        csv_data = filtered_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        csv_data = prepare_for_spreadsheet(filtered_df).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
         st.download_button(
             "📥 CSVダウンロード",
             csv_data,
