@@ -278,9 +278,11 @@ async def extract_salons_with_urls(page: Page) -> list[dict]:
         // 方法1: 詳細を見るリンクから親要素を辿ってサロン情報を取得
         document.querySelectorAll('a[href^="/r/"]').forEach(link => {
             const href = link.getAttribute('href');
-            if (!href || !/^\\/r\\/[A-Za-z0-9]+$/.test(href)) return;
+            if (!href) return;
+            const cleanHref = href.split('?')[0];
+            if (!/^\\/r\\/[A-Za-z0-9]+$/.test(cleanHref)) return;
             
-            const fullUrl = 'https://minimodel.jp' + href;
+            const fullUrl = 'https://minimodel.jp' + cleanHref;
             if (addedUrls.has(fullUrl)) return;
             
             // 親要素を辿って情報を探す
@@ -529,7 +531,8 @@ async def scrape_prefecture(
     existing_urls: set,
     progress: Optional[ProgressTracker],
     target_categories: list[str] = None,
-    max_pages: int = 5
+    max_pages: int = 5,
+    fetch_phone: bool = False,
 ) -> list[dict]:
     """都道府県をスクレイピング（/list/ 都道府県×カテゴリ・新着順）"""
 
@@ -587,17 +590,22 @@ async def scrape_prefecture(
             salon_url = salon["url"]
             cat_name = CATEGORIES.get(salon.get("category_key", ""), category_label_for_salon(salon))
 
-            detail = await get_salon_detail(
-                page, salon_url, prefecture, trust_prefecture=True
-            )
-
-            if not detail.get("matches_target"):
-                if progress:
-                    detected = detail.get("prefecture") or "不明"
-                    progress.set_message(
-                        f"  ⏭️ {name[:20]} スキップ（{detected} ≠ {prefecture}）"
-                    )
-                continue
+            if fetch_phone:
+                detail = await get_salon_detail(
+                    page, salon_url, prefecture, trust_prefecture=True
+                )
+                if not detail.get("matches_target"):
+                    if progress:
+                        detected = detail.get("prefecture") or "不明"
+                        progress.set_message(
+                            f"  ⏭️ {name[:20]} スキップ（{detected} ≠ {prefecture}）"
+                        )
+                    continue
+                address = detail.get("address") or prefecture
+                phone = detail.get("phone", "")
+            else:
+                address = prefecture
+                phone = ""
 
             found += 1
             if progress:
@@ -606,8 +614,8 @@ async def scrape_prefecture(
             results.append({
                 "サロン名": name,
                 "ジャンル": cat_name,
-                "住所": detail.get("address") or prefecture,
-                "電話番号": detail.get("phone", ""),
+                "住所": address,
+                "電話番号": phone,
                 "サロンURL": salon_url,
                 "いいね数": favorites,
                 "取得日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -764,7 +772,9 @@ async def scrape_minimo(
     progress_callback: Optional[Callable] = None,
     prefectures: list[str] = None,
     max_pages: int = 5,
-    nationwide: bool = False
+    nationwide: bool = False,
+    fetch_phone: bool = False,
+    on_prefecture_done: Optional[Callable[[list[dict]], None]] = None,
 ) -> list[dict]:
     """ミニモをスクレイピング（ページネーション対応）"""
     from playwright_setup import ensure_playwright_browsers
@@ -826,9 +836,12 @@ async def scrape_minimo(
                         existing_urls=existing_urls,
                         progress=tracker,
                         target_categories=categories,
-                        max_pages=max_pages
+                        max_pages=max_pages,
+                        fetch_phone=fetch_phone,
                     )
                     all_results.extend(results)
+                    if on_prefecture_done and results:
+                        on_prefecture_done(results)
                     
         finally:
             await browser.close()
@@ -847,7 +860,9 @@ def run_scraper(
     existing_urls: set = None,
     progress_callback: Optional[Callable] = None,
     max_pages: int = 5,
-    nationwide: bool = False
+    nationwide: bool = False,
+    fetch_phone: bool = False,
+    on_prefecture_done: Optional[Callable[[list[dict]], None]] = None,
 ) -> list[dict]:
     """同期実行"""
     return asyncio.run(scrape_minimo(
@@ -856,7 +871,9 @@ def run_scraper(
         existing_urls=existing_urls,
         progress_callback=progress_callback,
         max_pages=max_pages,
-        nationwide=nationwide
+        nationwide=nationwide,
+        fetch_phone=fetch_phone,
+        on_prefecture_done=on_prefecture_done,
     ))
 
 

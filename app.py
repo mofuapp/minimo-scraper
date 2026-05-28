@@ -232,8 +232,14 @@ max_pages = st.sidebar.slider(
     "検索ページ数",
     min_value=1,
     max_value=20,
-    value=20,
-    help="各検索での最大ページ数（1ページ=約20件）"
+    value=5,
+    help="各カテゴリの最大ページ数（1ページ≈20件）。多いほど時間がかかります"
+)
+
+fetch_phone = st.sidebar.checkbox(
+    "電話番号も取得する",
+    value=False,
+    help="ONにすると1件ずつ詳細ページを見に行くため、Cloud環境ではタイムアウトしやすくなります"
 )
 
 # 検索範囲
@@ -348,6 +354,15 @@ if st.button(
         try:
             # カテゴリ指定（空なら全て）
             cats = selected_categories if selected_categories else None
+            saved_count = [0]
+
+            def save_prefecture_batch(batch: list[dict]):
+                nonlocal df
+                df = add_new_salons(batch, df)
+                save_data(df)
+                saved_count[0] += len(batch)
+                for row in batch:
+                    existing_urls.add(row["サロンURL"])
 
             with st.spinner("初回のみブラウザをセットアップ中...（1〜2分かかる場合があります）"):
                 results = asyncio.run(scrape_minimo(
@@ -357,10 +372,14 @@ if st.button(
                     progress_callback=progress,
                     prefectures=search_prefectures,
                     max_pages=max_pages,
-                    nationwide=nationwide_search
+                    nationwide=nationwide_search,
+                    fetch_phone=fetch_phone,
+                    on_prefecture_done=save_prefecture_batch if not nationwide_search else None,
                 ))
-            
-            if results:
+
+            if not nationwide_search and saved_count[0] > 0:
+                st.success(f"✅ {saved_count[0]}件の新しいサロンを追加しました！")
+            elif results:
                 df = add_new_salons(results, df)
                 save_data(df)
                 st.success(f"✅ {len(results)}件の新しいサロンを追加しました！")
