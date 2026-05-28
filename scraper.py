@@ -300,52 +300,44 @@ async def extract_salons_with_urls(page: Page) -> list[dict]:
             
             if (!text) return;
             
-            // お気に入り数を探す（❤️ 数字 または 数字のみの行）
+            // お気に入り数を探す（評価→レビュー→お気に入りの3行パターンを最優先）
             let favorites = -1;
-            
-            // ハートマーク付きの数字を探す
-            const heartMatch = text.match(/[❤️♥💗🩷]\\s*(\\d+)/);
-            if (heartMatch) {
-                favorites = parseInt(heartMatch[1]);
-            }
-            
-            // 「お気に入り」テキストの近くの数字
-            if (favorites < 0) {
-                const favTextMatch = text.match(/お気に入り[：:]?\\s*(\\d+)/);
-                if (favTextMatch) {
-                    favorites = parseInt(favTextMatch[1]);
+            const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
+
+            for (let i = 0; i < lines.length - 2; i++) {
+                const l1 = lines[i];
+                const l2 = lines[i + 1];
+                const l3 = lines[i + 2];
+
+                if ((l1.match(/^[\\d.]+$/) || l1 === '-') &&
+                    (l2.match(/^[\\d,]+$/) || l2 === '-') &&
+                    l3.match(/^[\\d,]+$/)) {
+                    favorites = parseInt(l3.replace(/,/g, ''), 10);
+                    break;
                 }
             }
-            
-            // 評価-レビュー-お気に入りパターン（例：4.9 20 581）
-            if (favorites < 0) {
-                const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
-                for (let i = 0; i < lines.length - 2; i++) {
-                    const l1 = lines[i];
-                    const l2 = lines[i+1];
-                    const l3 = lines[i+2];
-                    
-                    if ((l1.match(/^[\\d.]+$/) || l1 === '-') &&
-                        (l2.match(/^[\\d,]+$/) || l2 === '-') &&
-                        l3.match(/^[\\d,]+$/)) {
-                        favorites = parseInt(l3.replace(/,/g, ''));
-                        break;
-                    }
-                }
-            }
-            
+
+            // 評価なし（- - 14 形式）
             if (favorites < 0) {
                 const dashMatch = text.match(/\\-\\s*\\n\\s*\\-\\s*\\n\\s*(\\d+)/);
                 if (dashMatch) {
-                    favorites = parseInt(dashMatch[1]);
+                    favorites = parseInt(dashMatch[1], 10);
                 }
             }
-            
-            // 統計表示なしの新規サロン（お気に入り0扱い）
+
+            // 「お気に入り」ラベル付き
+            if (favorites < 0) {
+                const favTextMatch = text.match(/お気に入り[：:]?\\s*(\\d+)/);
+                if (favTextMatch) {
+                    favorites = parseInt(favTextMatch[1], 10);
+                }
+            }
+
+            // 統計が取れない場合のみ0扱い（⭐️5月等の誤検出を避けるためハート正規表現は使わない）
             if (favorites < 0 && text.includes('詳細を見る')) {
                 favorites = 0;
             }
-            
+
             if (favorites < 0) return;
             
             // サロン名を探す
@@ -395,8 +387,16 @@ async def extract_salons_with_urls(page: Page) -> list[dict]:
             });
             addedUrls.add(fullUrl);
         });
-        
-        return results;
+
+        // 同一URLはお気に入り数が大きい方を採用（メニューリンク等の誤抽出対策）
+        const byUrl = new Map();
+        for (const item of results) {
+            const prev = byUrl.get(item.url);
+            if (!prev || item.favorites > prev.favorites) {
+                byUrl.set(item.url, item);
+            }
+        }
+        return [...byUrl.values()];
     }
     """
     
@@ -569,7 +569,7 @@ async def scrape_prefecture(
 
         matching = [
             s for s in unique_salons
-            if s.get("url") and s["favorites"] <= max_favorites
+            if s.get("url") and int(s.get("favorites", 999)) <= max_favorites
         ]
         new_matching = [
             s for s in matching
