@@ -1,6 +1,6 @@
 """
 ミニモ サロンスクレイパー
-キーワード検索でお気に入りが少ないサロンを抽出する
+都道府県×カテゴリ一覧（/list/）でお気に入りが少ないサロンを抽出する
 """
 import asyncio
 import re
@@ -83,12 +83,45 @@ PREFECTURES = [
     "佐賀県", "長崎県", "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県"
 ]
 
-# サロン数が少ない県（優先検索）
+# ミニモ /list/ URL用コード（アプリと同じ都道府県×カテゴリ検索）
+CATEGORY_CODES = {
+    "nail": 2,
+    "eyelash": 3,
+    "relaxation": 4,
+    "eyebrow": 5,
+}
+
+PREFECTURE_CODES = {
+    "北海道": 1, "青森県": 2, "岩手県": 3, "宮城県": 4, "秋田県": 5,
+    "山形県": 6, "福島県": 7, "茨城県": 8, "栃木県": 9, "群馬県": 10,
+    "埼玉県": 11, "千葉県": 12, "東京都": 13, "神奈川県": 14,
+    "新潟県": 15, "富山県": 16, "石川県": 17, "福井県": 18,
+    "山梨県": 19, "長野県": 20, "岐阜県": 21, "静岡県": 22, "愛知県": 23,
+    "三重県": 24, "滋賀県": 25, "京都府": 26, "大阪府": 27, "兵庫県": 28,
+    "奈良県": 29, "和歌山県": 30, "鳥取県": 31, "島根県": 32, "岡山県": 33,
+    "広島県": 34, "山口県": 35, "徳島県": 36, "香川県": 37, "愛媛県": 38,
+    "高知県": 39, "福岡県": 40, "佐賀県": 41, "長崎県": 42, "熊本県": 43,
+    "大分県": 44, "宮崎県": 45, "鹿児島県": 46, "沖縄県": 47,
+}
+
+# /list/.../c0/139 = 新着順
+SORT_NEWEST = 139
+
+# list URL 非対応カテゴリ（キーワード検索にフォールバック）
+LIST_FALLBACK_CATEGORIES = {"other"}
 SMALL_PREFECTURES = [
     "秋田県", "岩手県", "島根県", "鳥取県", "青森県", "山形県", "福井県",
     "徳島県", "佐賀県", "長崎県", "宮崎県", "高知県", "山口県", "和歌山県",
     "大分県", "愛媛県", "香川県", "富山県", "石川県", "奈良県", "福島県"
 ]
+
+
+def get_list_url(category_key: str, prefecture: str, page_num: int = 1) -> str:
+    """都道府県×カテゴリ一覧URL（モバイルアプリと同じ /list/ 形式）"""
+    cat_code = CATEGORY_CODES[category_key]
+    pref_code = PREFECTURE_CODES[prefecture]
+    base = f"https://minimodel.jp/list/{cat_code}/{pref_code}/c0/{SORT_NEWEST}"
+    return get_page_url(base, page_num)
 
 
 def get_search_url(category: str = None, area: str = None) -> str:
@@ -413,6 +446,69 @@ async def get_salon_detail(page: Page, salon_url: str, target_prefecture: str = 
     }
 
 
+async def scrape_prefecture_category(
+    page: Page,
+    prefecture: str,
+    category_key: str,
+    max_pages: int,
+    existing_urls: set,
+    progress: Optional[ProgressTracker],
+) -> list[dict]:
+    """1カテゴリ分を /list/ またはキーワード検索で取得"""
+    cat_name = CATEGORIES.get(category_key, category_key)
+    all_salons = []
+
+    if category_key in LIST_FALLBACK_CATEGORIES:
+        base_url = get_search_url(category=category_key, area=prefecture)
+        use_list = False
+    else:
+        base_url = get_list_url(category_key, prefecture)
+        use_list = True
+
+    if progress:
+        progress.set_message(f"  📂 {cat_name}")
+
+    for current_page in range(1, max_pages + 1):
+        page_url = get_list_url(category_key, prefecture, current_page) if use_list else get_page_url(base_url, current_page)
+
+        await page.goto(page_url, wait_until="domcontentloaded", timeout=20000)
+        await page.wait_for_timeout(2000)
+
+        if not use_list and current_page == 1:
+            await click_sort_newest(page)
+
+        salons = await extract_salons_with_urls(page)
+
+        new_salons = [
+            s for s in salons
+            if s.get("url")
+            and s["url"] not in {x.get("url") for x in all_salons}
+            and s["url"] not in existing_urls
+        ]
+
+        if not new_salons:
+            if progress:
+                progress.listing_step(f"    ページ{current_page}: データなし、終了")
+            break
+
+        all_salons.extend(new_salons)
+
+        if progress:
+            progress.listing_step(
+                f"    ページ{current_page}: {len(new_salons)}件 (累計{len(all_salons)}件)"
+            )
+
+        if current_page < max_pages:
+            has_next = await has_more_pages(page, current_page)
+            if not has_next:
+                break
+
+    for salon in all_salons:
+        salon["category_key"] = category_key
+
+    return all_salons
+
+
 async def scrape_prefecture(
     page: Page,
     prefecture: str,
@@ -422,68 +518,52 @@ async def scrape_prefecture(
     target_categories: list[str] = None,
     max_pages: int = 5
 ) -> list[dict]:
-    """都道府県をスクレイピング（キーワード検索・新着順・ページネーション）"""
-    
+    """都道府県をスクレイピング（/list/ 都道府県×カテゴリ・新着順）"""
+
     results = []
-    base_url = get_search_url(area=prefecture)
-    
+    search_categories = target_categories if target_categories else list(CATEGORIES.keys())
+
     if progress:
-        progress.set_message(f"🔍 {prefecture}（キーワード検索）")
-    
+        progress.set_message(f"🔍 {prefecture}（都道府県×カテゴリ検索）")
+
     try:
         all_salons = []
-        
-        for current_page in range(1, max_pages + 1):
-            page_url = get_page_url(base_url, current_page)
-            
-            await page.goto(page_url, wait_until="domcontentloaded", timeout=20000)
-            await page.wait_for_timeout(2000)
-            
-            if current_page == 1:
-                sorted_ok = await click_sort_newest(page)
-                if progress and sorted_ok:
-                    progress.set_message(f"  → 新着順に切り替え完了")
-            
-            salons = await extract_salons_with_urls(page)
-            
-            new_salons = [
-                s for s in salons
-                if s.get('url')
-                and s['url'] not in [x.get('url') for x in all_salons]
-                and s['url'] not in existing_urls
-                and salon_matches_categories(s, target_categories)
-            ]
-            
-            if len(new_salons) == 0:
-                if progress:
-                    progress.listing_step(f"  ページ{current_page}: データなし、終了")
-                break
-                
-            all_salons.extend(new_salons)
-            
-            if progress:
-                progress.listing_step(
-                    f"  ページ{current_page}: {len(new_salons)}件 (累計{len(all_salons)}件)"
-                )
-            
-            if current_page < max_pages:
-                has_next = await has_more_pages(page, current_page)
-                if not has_next:
-                    break
-        
+
+        for cat in search_categories:
+            if cat not in CATEGORIES:
+                continue
+            cat_salons = await scrape_prefecture_category(
+                page=page,
+                prefecture=prefecture,
+                category_key=cat,
+                max_pages=max_pages,
+                existing_urls=existing_urls,
+                progress=progress,
+            )
+            all_salons.extend(cat_salons)
+
+        # URL重複を除去
+        seen = set()
+        unique_salons = []
+        for salon in all_salons:
+            url = salon.get("url")
+            if url and url not in seen:
+                seen.add(url)
+                unique_salons.append(salon)
+
         matching = [
-            s for s in all_salons
-            if s.get('url') and s['url'] not in existing_urls and s['favorites'] <= max_favorites
+            s for s in unique_salons
+            if s.get("url") and s["url"] not in existing_urls and s["favorites"] <= max_favorites
         ]
         if progress:
             progress.add_detail_total(len(matching))
 
         found = 0
         for salon in matching:
-            favorites = salon['favorites']
-            name = salon['name']
-            salon_url = salon['url']
-            cat_name = category_label_for_salon(salon)
+            favorites = salon["favorites"]
+            name = salon["name"]
+            salon_url = salon["url"]
+            cat_name = CATEGORIES.get(salon.get("category_key", ""), category_label_for_salon(salon))
 
             detail = await get_salon_detail(page, salon_url, prefecture)
 
@@ -510,16 +590,16 @@ async def scrape_prefecture(
             })
 
             existing_urls.add(salon_url)
-        
+
         if progress:
             progress.set_message(
-                f"📊 {prefecture}: {found}件発見 (全{len(all_salons)}件中)"
+                f"📊 {prefecture}: {found}件発見 (全{len(unique_salons)}件中)"
             )
-                
+
     except Exception as e:
         if progress:
             progress.set_message(f"⚠️ {prefecture}: エラー - {str(e)[:30]}")
-    
+
     return results
 
 
@@ -684,7 +764,7 @@ async def scrape_minimo(
         if nationwide:
             listing_total = len(categories) * max_pages
         else:
-            listing_total = len(prefectures) * max_pages
+            listing_total = len(prefectures) * len(categories) * max_pages
         tracker = ProgressTracker(progress_callback)
         tracker.configure_listing(listing_total)
     
