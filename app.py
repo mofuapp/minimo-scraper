@@ -365,7 +365,10 @@ if st.button(
                 save_data(df)
                 st.success(f"✅ {len(results)}件の新しいサロンを追加しました！")
             else:
-                st.warning("条件に合うサロンは見つかりませんでした")
+                st.warning(
+                    "条件に合うサロンは見つかりませんでした。"
+                    "（既に登録済みの可能性があります。ログの「候補○件」を確認してください）"
+                )
                 
         except Exception as e:
             st.error(f"❌ エラー: {str(e)}")

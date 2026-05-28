@@ -405,7 +405,12 @@ async def extract_salons_with_urls(page: Page) -> list[dict]:
         return []
 
 
-async def get_salon_detail(page: Page, salon_url: str, target_prefecture: str = "") -> dict:
+async def get_salon_detail(
+    page: Page,
+    salon_url: str,
+    target_prefecture: str = "",
+    trust_prefecture: bool = False,
+) -> dict:
     """サロン詳細を取得（都道府県確認・電話番号は/telリンクから）"""
     phone = ""
     location = {"prefecture": "", "address": "", "station": ""}
@@ -434,15 +439,24 @@ async def get_salon_detail(page: Page, salon_url: str, target_prefecture: str = 
     except Exception:
         pass
 
+    detected = location.get("prefecture", "")
+    if not target_prefecture:
+        matches_target = True
+    elif trust_prefecture:
+        # /list/ 検索は都道府県で絞済み。未取得時は通す、矛盾時のみ除外
+        matches_target = (
+            not detected
+            or prefecture_matches(detected, target_prefecture)
+        )
+    else:
+        matches_target = prefecture_matches(detected, target_prefecture)
+
     return {
-        "prefecture": location.get("prefecture", ""),
+        "prefecture": detected,
         "address": location.get("address", ""),
         "station": location.get("station", ""),
         "phone": phone,
-        "matches_target": (
-            not target_prefecture
-            or prefecture_matches(location.get("prefecture", ""), target_prefecture)
-        ),
+        "matches_target": matches_target,
     }
 
 
@@ -472,30 +486,29 @@ async def scrape_prefecture_category(
         page_url = get_list_url(category_key, prefecture, current_page) if use_list else get_page_url(base_url, current_page)
 
         await page.goto(page_url, wait_until="domcontentloaded", timeout=20000)
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(3000)
 
         if not use_list and current_page == 1:
             await click_sort_newest(page)
 
         salons = await extract_salons_with_urls(page)
 
+        if not salons:
+            if progress:
+                progress.listing_step(f"    ページ{current_page}: 読込0件、終了")
+            break
+
         new_salons = [
             s for s in salons
             if s.get("url")
             and s["url"] not in {x.get("url") for x in all_salons}
-            and s["url"] not in existing_urls
         ]
-
-        if not new_salons:
-            if progress:
-                progress.listing_step(f"    ページ{current_page}: データなし、終了")
-            break
 
         all_salons.extend(new_salons)
 
         if progress:
             progress.listing_step(
-                f"    ページ{current_page}: {len(new_salons)}件 (累計{len(all_salons)}件)"
+                f"    ページ{current_page}: +{len(new_salons)}件 (累計{len(all_salons)}件)"
             )
 
         if current_page < max_pages:
@@ -553,19 +566,30 @@ async def scrape_prefecture(
 
         matching = [
             s for s in unique_salons
-            if s.get("url") and s["url"] not in existing_urls and s["favorites"] <= max_favorites
+            if s.get("url") and s["favorites"] <= max_favorites
+        ]
+        new_matching = [
+            s for s in matching
+            if s.get("url") and s["url"] not in existing_urls
         ]
         if progress:
-            progress.add_detail_total(len(matching))
+            progress.add_detail_total(len(new_matching))
+            if len(matching) > len(new_matching):
+                progress.set_message(
+                    f"  ℹ️ お気に入り{max_favorites}以下: {len(matching)}件 "
+                    f"(うち既存{len(matching) - len(new_matching)}件スキップ)"
+                )
 
         found = 0
-        for salon in matching:
+        for salon in new_matching:
             favorites = salon["favorites"]
             name = salon["name"]
             salon_url = salon["url"]
             cat_name = CATEGORIES.get(salon.get("category_key", ""), category_label_for_salon(salon))
 
-            detail = await get_salon_detail(page, salon_url, prefecture)
+            detail = await get_salon_detail(
+                page, salon_url, prefecture, trust_prefecture=True
+            )
 
             if not detail.get("matches_target"):
                 if progress:
@@ -593,7 +617,7 @@ async def scrape_prefecture(
 
         if progress:
             progress.set_message(
-                f"📊 {prefecture}: {found}件発見 (全{len(unique_salons)}件中)"
+                f"📊 {prefecture}: {found}件追加 (候補{len(matching)}件 / 全{len(unique_salons)}件)"
             )
 
     except Exception as e:
