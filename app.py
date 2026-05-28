@@ -340,6 +340,9 @@ if st.button(
         progress_label = st.empty()
         progress_area = st.empty()
         
+        import importlib
+        import scraper as scraper_mod
+        importlib.reload(scraper_mod)
         from scraper import scrape_minimo
         import asyncio
         
