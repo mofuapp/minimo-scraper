@@ -355,11 +355,11 @@ if st.button(
             # カテゴリ指定（空なら全て）
             cats = selected_categories if selected_categories else None
             saved_count = [0]
+            work = {"df": df}
 
             def save_prefecture_batch(batch: list[dict]):
-                nonlocal df
-                df = add_new_salons(batch, df)
-                save_data(df)
+                work["df"] = add_new_salons(batch, work["df"])
+                save_data(work["df"])
                 saved_count[0] += len(batch)
                 for row in batch:
                     existing_urls.add(row["サロンURL"])
@@ -378,6 +378,7 @@ if st.button(
                 ))
 
             if not nationwide_search and saved_count[0] > 0:
+                df = work["df"]
                 st.success(f"✅ {saved_count[0]}件の新しいサロンを追加しました！")
             elif results:
                 df = add_new_salons(results, df)
