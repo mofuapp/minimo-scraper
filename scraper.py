@@ -186,9 +186,28 @@ def category_label_for_salon(salon: dict) -> str:
     return CATEGORIES.get(cat_key, salon.get("genre", "美容"))
 
 
+def format_address(location: dict, fallback_prefecture: str = "") -> str:
+    """都道府県＋市区町村（＋駅）形式の住所文字列を生成"""
+    pref = location.get("prefecture") or fallback_prefecture
+    city = location.get("city", "")
+    station = location.get("station", "")
+
+    parts = []
+    if pref:
+        parts.append(pref)
+    if city and city not in parts:
+        parts.append(city)
+    elif station and not city:
+        parts.append(station)
+
+    if parts:
+        return " ".join(parts)
+    return location.get("address") or fallback_prefecture
+
+
 async def extract_location_from_page(page: Page) -> dict:
-    """サロン詳細ページから都道府県・住所情報を取得"""
-    location = {"prefecture": "", "address": "", "station": ""}
+    """サロン詳細ページから都道府県・市区町村・住所情報を取得"""
+    location = {"prefecture": "", "city": "", "address": "", "station": ""}
 
     try:
         links = await page.evaluate(
@@ -234,15 +253,30 @@ async def extract_location_from_page(page: Page) -> dict:
                 station = match.group(1).strip()
 
         location["prefecture"] = prefecture
+        location["city"] = city
         location["station"] = station
 
-        parts = [p for p in [prefecture, city, station] if p]
-        location["address"] = " ".join(parts)
+        if not city:
+            city_match = re.search(
+                r"(?:都|道|府|県)([^都道府県\n\s]{1,12}[市区町村])", body
+            )
+            if city_match:
+                city = city_match.group(1).strip()
+                location["city"] = city
 
-        if not location["address"]:
+        parts = [p for p in [prefecture, city, station] if p]
+        location["address"] = format_address(location)
+
+        if not location["address"] or location["address"] == prefecture:
             zip_match = re.search(r"〒\d{3}-\d{4}[^\n]+", body)
             if zip_match:
-                location["address"] = zip_match.group(0).strip()
+                zip_line = zip_match.group(0).strip()
+                location["address"] = zip_line
+                if not city:
+                    zm = re.search(r"(?:都|道|府|県)([^都道府県\s]{1,12}[市区町村])", zip_line)
+                    if zm:
+                        location["city"] = zm.group(1).strip()
+                        location["address"] = format_address(location)
 
     except Exception:
         pass
@@ -412,10 +446,11 @@ async def get_salon_detail(
     salon_url: str,
     target_prefecture: str = "",
     trust_prefecture: bool = False,
+    fetch_phone: bool = False,
 ) -> dict:
-    """サロン詳細を取得（都道府県確認・電話番号は/telリンクから）"""
+    """サロン詳細を取得（住所・任意で電話番号）"""
     phone = ""
-    location = {"prefecture": "", "address": "", "station": ""}
+    location = {"prefecture": "", "city": "", "address": "", "station": ""}
 
     try:
         await page.goto(salon_url, wait_until="domcontentloaded", timeout=15000)
@@ -423,20 +458,21 @@ async def get_salon_detail(
 
         location = await extract_location_from_page(page)
 
-        contact_link = await page.query_selector('a[href$="/tel"]')
-        if contact_link:
-            await contact_link.click()
-            await page.wait_for_timeout(1500)
+        if fetch_phone:
+            contact_link = await page.query_selector('a[href$="/tel"]')
+            if contact_link:
+                await contact_link.click()
+                await page.wait_for_timeout(1500)
 
-            tel_body = await page.evaluate('document.body.innerText')
+                tel_body = await page.evaluate('document.body.innerText')
 
-            phone_match = re.search(r'(\d{10,11})', tel_body)
-            if phone_match:
-                phone = phone_match.group(1)
-            else:
-                phone_match = re.search(r'(\d{2,4}-\d{2,4}-\d{4})', tel_body)
+                phone_match = re.search(r'(\d{10,11})', tel_body)
                 if phone_match:
                     phone = phone_match.group(1)
+                else:
+                    phone_match = re.search(r'(\d{2,4}-\d{2,4}-\d{4})', tel_body)
+                    if phone_match:
+                        phone = phone_match.group(1)
 
     except Exception:
         pass
@@ -445,7 +481,6 @@ async def get_salon_detail(
     if not target_prefecture:
         matches_target = True
     elif trust_prefecture:
-        # /list/ 検索は都道府県で絞済み。未取得時は通す、矛盾時のみ除外
         matches_target = (
             not detected
             or prefecture_matches(detected, target_prefecture)
@@ -455,6 +490,7 @@ async def get_salon_detail(
 
     return {
         "prefecture": detected,
+        "city": location.get("city", ""),
         "address": location.get("address", ""),
         "station": location.get("station", ""),
         "phone": phone,
@@ -590,22 +626,19 @@ async def scrape_prefecture(
             salon_url = salon["url"]
             cat_name = CATEGORIES.get(salon.get("category_key", ""), category_label_for_salon(salon))
 
-            if fetch_phone:
-                detail = await get_salon_detail(
-                    page, salon_url, prefecture, trust_prefecture=True
-                )
-                if not detail.get("matches_target"):
-                    if progress:
-                        detected = detail.get("prefecture") or "不明"
-                        progress.set_message(
-                            f"  ⏭️ {name[:20]} スキップ（{detected} ≠ {prefecture}）"
-                        )
-                    continue
-                address = detail.get("address") or prefecture
-                phone = detail.get("phone", "")
-            else:
-                address = prefecture
-                phone = ""
+            detail = await get_salon_detail(
+                page, salon_url, prefecture,
+                trust_prefecture=True, fetch_phone=fetch_phone,
+            )
+            if not detail.get("matches_target"):
+                if progress:
+                    detected = detail.get("prefecture") or "不明"
+                    progress.set_message(
+                        f"  ⏭️ {name[:20]} スキップ（{detected} ≠ {prefecture}）"
+                    )
+                continue
+            address = format_address(detail, prefecture)
+            phone = detail.get("phone", "") if fetch_phone else ""
 
             found += 1
             if progress:
@@ -668,7 +701,8 @@ async def scrape_category_nationwide(
     max_favorites: int,
     existing_urls: set,
     progress: Optional[ProgressTracker],
-    max_pages: int = 10
+    max_pages: int = 10,
+    fetch_phone: bool = False,
 ) -> list[dict]:
     """カテゴリ全国検索（新着順・ページネーション対応）"""
     
@@ -732,7 +766,9 @@ async def scrape_category_nationwide(
             salon_url = salon['url']
             genre = salon.get('genre', '')
 
-            detail = await get_salon_detail(page, salon_url, "")
+            detail = await get_salon_detail(
+                page, salon_url, "", fetch_phone=fetch_phone,
+            )
 
             found += 1
             if progress:
@@ -741,8 +777,8 @@ async def scrape_category_nationwide(
             results.append({
                 "サロン名": name,
                 "ジャンル": category_name,
-                "住所": detail.get("address", ""),
-                "電話番号": detail.get("phone", ""),
+                "住所": format_address(detail),
+                "電話番号": detail.get("phone", "") if fetch_phone else "",
                 "サロンURL": salon_url,
                 "いいね数": favorites,
                 "取得日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -823,7 +859,8 @@ async def scrape_minimo(
                         max_favorites=max_likes,
                         existing_urls=existing_urls,
                         progress=tracker,
-                        max_pages=max_pages
+                        max_pages=max_pages,
+                        fetch_phone=fetch_phone,
                     )
                     all_results.extend(results)
             else:

@@ -232,14 +232,14 @@ max_pages = st.sidebar.slider(
     "検索ページ数",
     min_value=1,
     max_value=20,
-    value=5,
+    value=20,
     help="各カテゴリの最大ページ数（1ページ≈20件）。多いほど時間がかかります"
 )
 
 fetch_phone = st.sidebar.checkbox(
     "電話番号も取得する",
-    value=False,
-    help="ONにすると1件ずつ詳細ページを見に行くため、Cloud環境ではタイムアウトしやすくなります"
+    value=True,
+    help="ONで電話番号も取得（詳細ページは住所取得のため常に参照します）"
 )
 
 # 検索範囲
