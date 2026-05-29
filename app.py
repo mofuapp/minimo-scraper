@@ -6,21 +6,48 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+import re
 import streamlit.components.v1 as components
 
 from scraper import CATEGORIES, PREFECTURES, SMALL_PREFECTURES
 
 
-def format_phone_for_spreadsheet(phone) -> str:
-    """スプレッドシート用に電話番号の先頭0を保持（'を付与）"""
+def normalize_phone_digits(phone) -> str:
+    """電話番号を数字のみに正規化（スプシで0が消えた分を復元）"""
     if phone is None or (isinstance(phone, float) and pd.isna(phone)):
         return ""
-    phone = str(phone).strip()
-    if not phone:
+    s = str(phone).strip()
+    if not s or s.lower() == "nan":
         return ""
-    if phone.startswith("'"):
-        return phone
-    return f"'{phone}"
+    if s.startswith("'"):
+        s = s[1:].strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    digits = re.sub(r"\D", "", s)
+    if not digits:
+        return ""
+    if len(digits) == 9:
+        digits = "0" + digits
+    elif len(digits) == 10 and not digits.startswith("0"):
+        digits = "0" + digits
+    return digits
+
+
+def format_phone_for_spreadsheet(phone) -> str:
+    """スプレッドシート用に電話番号の先頭0を保持（'を付与）"""
+    digits = normalize_phone_digits(phone)
+    if not digits:
+        return ""
+    return f"'{digits}"
+
+
+def normalize_phones_in_df(df: pd.DataFrame) -> pd.DataFrame:
+    """DataFrame内の電話番号をスプシ用形式に統一"""
+    if df.empty or "電話番号" not in df.columns:
+        return df
+    out = df.copy()
+    out["電話番号"] = out["電話番号"].apply(format_phone_for_spreadsheet)
+    return out
 
 
 def prepare_for_spreadsheet(df: pd.DataFrame) -> pd.DataFrame:
@@ -153,8 +180,15 @@ def load_data() -> pd.DataFrame:
     
     if DATA_FILE.exists():
         try:
-            df = pd.read_csv(DATA_FILE, encoding="utf-8-sig")
-            return df
+            df = pd.read_csv(
+                DATA_FILE,
+                encoding="utf-8-sig",
+                dtype={"電話番号": str},
+            )
+            normalized = normalize_phones_in_df(df)
+            if "電話番号" in df.columns and not normalized["電話番号"].equals(df["電話番号"].astype(str)):
+                normalized.to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
+            return normalized
         except:
             pass
     
@@ -167,7 +201,7 @@ def load_data() -> pd.DataFrame:
 def save_data(df: pd.DataFrame):
     """CSVにデータを保存"""
     DATA_DIR.mkdir(exist_ok=True)
-    df.to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
+    normalize_phones_in_df(df).to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
 
 
 def add_new_salons(new_salons: list[dict], df: pd.DataFrame) -> pd.DataFrame:
@@ -182,7 +216,7 @@ def add_new_salons(new_salons: list[dict], df: pd.DataFrame) -> pd.DataFrame:
         return df
     
     new_df = pd.DataFrame(unique)
-    return pd.concat([df, new_df], ignore_index=True)
+    return normalize_phones_in_df(pd.concat([df, new_df], ignore_index=True))
 
 
 # ページ設定
