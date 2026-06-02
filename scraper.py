@@ -187,29 +187,87 @@ def category_label_for_salon(salon: dict) -> str:
 
 
 def format_address(location: dict, fallback_prefecture: str = "") -> str:
-    """都道府県＋市区町村（＋駅）形式の住所文字列を生成"""
+    """完全住所を返す（都道府県＋市区町村＋番地・建物名）"""
+    addr = (location.get("address") or "").strip()
+    addr = re.sub(r"\s*\(地図\)\s*$", "", addr).strip()
+    if addr and re.search(r"(?:都|道|府|県)", addr):
+        return addr
+
     pref = location.get("prefecture") or fallback_prefecture
     city = location.get("city", "")
+    street = location.get("street", "")
     station = location.get("station", "")
 
-    parts = []
+    if street:
+        return f"{pref}{city}{street}"
+    if city:
+        return f"{pref}{city}"
     if pref:
-        parts.append(pref)
-    if city and city not in parts:
-        parts.append(city)
-    elif station and not city:
-        parts.append(station)
+        return pref
+    return fallback_prefecture
 
-    if parts:
-        return " ".join(parts)
-    return location.get("address") or fallback_prefecture
+
+def _fill_location_parts(location: dict) -> None:
+    """完全住所文字列から都道府県・市区町村・番地を分解"""
+    addr = (location.get("address") or "").strip()
+    addr = re.sub(r"^〒\d{3}-\d{4}\s*", "", addr).strip()
+    if not addr:
+        return
+
+    for pref in sorted(PREFECTURES, key=len, reverse=True):
+        if not addr.startswith(pref):
+            continue
+        location["prefecture"] = pref
+        rest = addr[len(pref):]
+        city_m = re.match(r"^(.+?[市区町村郡])", rest)
+        if city_m:
+            location["city"] = city_m.group(1)
+            location["street"] = rest[len(city_m.group(1)):].strip()
+        else:
+            location["street"] = rest.strip()
+        break
+
+
+def _extract_full_address_from_body(body: str) -> str:
+    """詳細ページ本文から番地まで含む住所を抽出"""
+    for line in body.split("\n"):
+        line = line.strip()
+        if "(地図)" not in line:
+            continue
+        addr = re.sub(r"\s*\(地図\)\s*$", "", line).strip()
+        if not re.search(r"(?:都|道|府|県)", addr):
+            continue
+        if any(x in addr for x in ("おすすめ", "一覧", "行ける", "サロン電話", "予約")):
+            continue
+        if len(addr) < 8:
+            continue
+        return addr
+
+    zip_match = re.search(r"〒\d{3}-\d{4}[^\n(]{5,120}", body)
+    if zip_match:
+        return zip_match.group(0).strip()
+
+    return ""
 
 
 async def extract_location_from_page(page: Page) -> dict:
-    """サロン詳細ページから都道府県・市区町村・住所情報を取得"""
-    location = {"prefecture": "", "city": "", "address": "", "station": ""}
+    """サロン詳細ページから完全住所を取得"""
+    location = {
+        "prefecture": "",
+        "city": "",
+        "street": "",
+        "address": "",
+        "station": "",
+    }
 
     try:
+        body = await page.evaluate("document.body.innerText")
+
+        full_addr = _extract_full_address_from_body(body)
+        if full_addr:
+            location["address"] = full_addr
+            _fill_location_parts(location)
+
         links = await page.evaluate(
             """
             () => [...document.querySelectorAll('a')]
@@ -218,8 +276,8 @@ async def extract_location_from_page(page: Page) -> dict:
             """
         )
 
-        prefecture = ""
-        city = ""
+        prefecture = location.get("prefecture", "")
+        city = location.get("city", "")
         station = ""
 
         if "トップ" in links:
@@ -229,7 +287,8 @@ async def extract_location_from_page(page: Page) -> dict:
             pref_idx = -1
             for i, t in enumerate(breadcrumb):
                 if normalize_prefecture(t) in PREFECTURES:
-                    prefecture = normalize_prefecture(t)
+                    if not prefecture:
+                        prefecture = normalize_prefecture(t)
                     pref_idx = i
                     break
 
@@ -239,44 +298,31 @@ async def extract_location_from_page(page: Page) -> dict:
                         station = t
                         break
                     if (
-                        normalize_prefecture(t) not in PREFECTURES
+                        not city
+                        and normalize_prefecture(t) not in PREFECTURES
                         and len(t) <= 20
                         and t not in {"フォト", "メニュー", "口コミ"}
                     ):
                         city = t
-
-        body = await page.evaluate("document.body.innerText")
 
         if not station:
             match = re.search(r"([^\n]{0,25}駅[^\n]{0,25})", body)
             if match:
                 station = match.group(1).strip()
 
-        location["prefecture"] = prefecture
-        location["city"] = city
+        location["prefecture"] = prefecture or location.get("prefecture", "")
+        location["city"] = city or location.get("city", "")
         location["station"] = station
 
-        if not city:
-            city_match = re.search(
-                r"(?:都|道|府|県)([^都道府県\n\s]{1,12}[市区町村])", body
-            )
-            if city_match:
-                city = city_match.group(1).strip()
-                location["city"] = city
+        if not location.get("address"):
+            if not city and prefecture:
+                city_match = re.search(
+                    r"(?:都|道|府|県)([^都道府県\n\s]{1,12}[市区町村郡])", body
+                )
+                if city_match:
+                    location["city"] = city_match.group(1).strip()
 
-        parts = [p for p in [prefecture, city, station] if p]
-        location["address"] = format_address(location)
-
-        if not location["address"] or location["address"] == prefecture:
-            zip_match = re.search(r"〒\d{3}-\d{4}[^\n]+", body)
-            if zip_match:
-                zip_line = zip_match.group(0).strip()
-                location["address"] = zip_line
-                if not city:
-                    zm = re.search(r"(?:都|道|府|県)([^都道府県\s]{1,12}[市区町村])", zip_line)
-                    if zm:
-                        location["city"] = zm.group(1).strip()
-                        location["address"] = format_address(location)
+            location["address"] = format_address(location)
 
     except Exception:
         pass
