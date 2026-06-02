@@ -50,6 +50,18 @@ def normalize_phones_in_df(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def dedupe_by_salon_url(df: pd.DataFrame, keep: str = "last") -> pd.DataFrame:
+    """サロンURLで重複行を除去（同一URLは取得日時が新しい方を残す）"""
+    if df.empty or "サロンURL" not in df.columns:
+        return df
+    out = df.copy()
+    out["サロンURL"] = out["サロンURL"].astype(str).str.strip()
+    out = out[out["サロンURL"].notna() & (out["サロンURL"] != "") & (out["サロンURL"] != "nan")]
+    if "取得日時" in out.columns:
+        out = out.sort_values("取得日時", ascending=True)
+    return out.drop_duplicates(subset=["サロンURL"], keep=keep).reset_index(drop=True)
+
+
 def prepare_for_spreadsheet(df: pd.DataFrame) -> pd.DataFrame:
     """コピー・CSV出力用に電話番号を整形"""
     out = df.copy()
@@ -193,8 +205,12 @@ def load_data() -> pd.DataFrame:
                 encoding="utf-8-sig",
                 dtype={"電話番号": str},
             )
-            normalized = normalize_phones_in_df(df)
-            if "電話番号" in df.columns and not normalized["電話番号"].equals(df["電話番号"].astype(str)):
+            normalized = dedupe_by_salon_url(normalize_phones_in_df(df))
+            if len(normalized) < len(df):
+                normalized.to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
+            elif "電話番号" in df.columns and not normalized["電話番号"].equals(
+                df["電話番号"].astype(str)
+            ):
                 normalized.to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
             return normalized
         except:
@@ -209,22 +225,38 @@ def load_data() -> pd.DataFrame:
 def save_data(df: pd.DataFrame):
     """CSVにデータを保存"""
     DATA_DIR.mkdir(exist_ok=True)
-    normalize_phones_in_df(df).to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
+    dedupe_by_salon_url(normalize_phones_in_df(df)).to_csv(
+        DATA_FILE, index=False, encoding="utf-8-sig"
+    )
 
 
-def add_new_salons(new_salons: list[dict], df: pd.DataFrame) -> pd.DataFrame:
-    """新しいサロン情報を追加"""
+def add_new_salons(
+    new_salons: list[dict], df: pd.DataFrame
+) -> tuple[pd.DataFrame, list[dict]]:
+    """新しいサロン情報を追加（URL重複は1件のみ）"""
     if not new_salons:
-        return df
-    
-    existing = set(df["サロンURL"].tolist())
-    unique = [s for s in new_salons if s.get("サロンURL") and s["サロンURL"] not in existing]
-    
+        return df, []
+
+    existing = set(df["サロンURL"].dropna().astype(str).str.strip().tolist())
+    unique: list[dict] = []
+    seen_in_batch: set[str] = set()
+
+    for salon in new_salons:
+        url = salon.get("サロンURL")
+        if not url:
+            continue
+        url = str(url).strip()
+        if url in existing or url in seen_in_batch:
+            continue
+        seen_in_batch.add(url)
+        unique.append(salon)
+
     if not unique:
-        return df
-    
+        return df, []
+
     new_df = pd.DataFrame(unique)
-    return normalize_phones_in_df(pd.concat([df, new_df], ignore_index=True))
+    merged = normalize_phones_in_df(pd.concat([df, new_df], ignore_index=True))
+    return dedupe_by_salon_url(merged), unique
 
 
 # ページ設定
@@ -412,11 +444,13 @@ if st.button(
             work = {"df": df}
 
             def save_prefecture_batch(batch: list[dict]):
-                work["df"] = add_new_salons(batch, work["df"])
+                work["df"], added = add_new_salons(batch, work["df"])
+                if not added:
+                    return
                 save_data(work["df"])
-                saved_count[0] += len(batch)
-                scrape_session_new.extend(batch)
-                for row in batch:
+                saved_count[0] += len(added)
+                scrape_session_new.extend(added)
+                for row in added:
                     existing_urls.add(row["サロンURL"])
 
             with st.spinner("初回のみブラウザをセットアップ中...（1〜2分かかる場合があります）"):
@@ -433,25 +467,27 @@ if st.button(
                 ))
 
             if scrape_session_new:
-                st.session_state.last_scrape_new = normalize_phones_in_df(
-                    pd.DataFrame(scrape_session_new)
+                st.session_state.last_scrape_new = dedupe_by_salon_url(
+                    normalize_phones_in_df(pd.DataFrame(scrape_session_new))
                 )
             elif results:
-                st.session_state.last_scrape_new = normalize_phones_in_df(
-                    pd.DataFrame(results)
+                df, added = add_new_salons(results, df)
+                save_data(df)
+                st.session_state.last_scrape_new = (
+                    dedupe_by_salon_url(normalize_phones_in_df(pd.DataFrame(added)))
+                    if added
+                    else pd.DataFrame(columns=st.session_state.last_scrape_new.columns)
                 )
             else:
                 st.session_state.last_scrape_new = pd.DataFrame(
                     columns=st.session_state.last_scrape_new.columns
                 )
 
-            if not nationwide_search and saved_count[0] > 0:
-                df = work["df"]
-                st.success(f"✅ {saved_count[0]}件の新しいサロンを追加しました！")
-            elif results:
-                df = add_new_salons(results, df)
-                save_data(df)
-                st.success(f"✅ {len(results)}件の新しいサロンを追加しました！")
+            new_added_count = len(st.session_state.last_scrape_new)
+            if new_added_count > 0:
+                if not nationwide_search:
+                    df = work["df"]
+                st.success(f"✅ {new_added_count}件の新しいサロンを追加しました！")
             else:
                 st.warning(
                     "条件に合うサロンは見つかりませんでした。"
@@ -493,7 +529,7 @@ if not df.empty:
     ]
 
     def apply_list_filters(source_df: pd.DataFrame) -> pd.DataFrame:
-        out = source_df.copy()
+        out = dedupe_by_salon_url(source_df.copy())
         if out.empty:
             return out
         if filter_genre:
@@ -507,9 +543,11 @@ if not df.empty:
     export_all_df = apply_list_filters(df)
     export_new_df = apply_list_filters(st.session_state.last_scrape_new)
     
-    # テーブル表示
+    # テーブル表示（URL重複は表示上も1件に）
+    display_df = dedupe_by_salon_url(filtered_df)
+
     st.dataframe(
-        filtered_df.sort_values("いいね数", ascending=True),
+        display_df.sort_values("いいね数", ascending=True),
         use_container_width=True,
         column_config={
             "サロンURL": st.column_config.LinkColumn("URL"),
