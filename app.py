@@ -58,47 +58,55 @@ def prepare_for_spreadsheet(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def create_copy_button(df: pd.DataFrame, button_text: str = "📋 コピー"):
+def create_copy_button(
+    df: pd.DataFrame,
+    button_text: str = "📋 コピー",
+    button_id: str = "copy_default",
+):
     """スプレッドシート貼り付け用のコピーボタンを作成"""
+    if df.empty:
+        st.caption(f"{button_text}（0件）")
+        return
+
     export_df = prepare_for_spreadsheet(df)
-    tsv_data = export_df.to_csv(sep='\t', index=False)
-    # JavaScriptで使えるようにエスケープ
-    escaped_data = tsv_data.replace('`', "'").replace('$', '')
-    
-    # JavaScriptでクリップボードにコピー
+    tsv_data = export_df.to_csv(sep="\t", index=False)
+    escaped_data = tsv_data.replace("`", "'").replace("$", "").replace("\\", "\\\\")
+    btn_class = f"copy-btn-{button_id}"
+    fn_name = f"copyToClipboard_{button_id}"
+
     copy_js = f"""
     <style>
-        .copy-btn {{
+        .{btn_class} {{
             background-color: #ff4b4b;
             color: white;
             border: none;
-            padding: 10px 24px;
+            padding: 10px 16px;
             border-radius: 8px;
             cursor: pointer;
-            font-size: 16px;
+            font-size: 14px;
             width: 100%;
             transition: background-color 0.3s;
         }}
-        .copy-btn:hover {{
+        .{btn_class}:hover {{
             background-color: #ff6b6b;
         }}
-        .copy-btn.copied {{
+        .{btn_class}.copied {{
             background-color: #00c853;
         }}
     </style>
-    <button class="copy-btn" onclick="copyToClipboard()">
-        {button_text}（スプシに貼り付けOK）
+    <button class="{btn_class}" onclick="{fn_name}()">
+        {button_text}（{len(export_df)}件）
     </button>
     <script>
-        const tsvData = `{escaped_data}`;
-        
-        function copyToClipboard() {{
-            navigator.clipboard.writeText(tsvData).then(function() {{
-                const btn = document.querySelector('.copy-btn');
+        const tsvData_{button_id} = `{escaped_data}`;
+
+        function {fn_name}() {{
+            navigator.clipboard.writeText(tsvData_{button_id}).then(function() {{
+                const btn = document.querySelector('.{btn_class}');
                 btn.textContent = '✅ コピーしました！';
                 btn.classList.add('copied');
                 setTimeout(function() {{
-                    btn.textContent = '{button_text}（スプシに貼り付けOK）';
+                    btn.textContent = '{button_text}（{len(export_df)}件）';
                     btn.classList.remove('copied');
                 }}, 2000);
             }}).catch(function(err) {{
@@ -346,6 +354,14 @@ else:
 df = load_data()
 existing_urls = set(df["サロンURL"].dropna().tolist())
 
+if "last_scrape_new" not in st.session_state:
+    st.session_state.last_scrape_new = pd.DataFrame(
+        columns=[
+            "サロン名", "ジャンル", "住所", "電話番号",
+            "サロンURL", "いいね数", "取得日時",
+        ]
+    )
+
 # メインエリア
 col1, col2 = st.columns([2, 1])
 
@@ -392,12 +408,14 @@ if st.button(
             # カテゴリ指定（空なら全て）
             cats = selected_categories if selected_categories else None
             saved_count = [0]
+            scrape_session_new = []
             work = {"df": df}
 
             def save_prefecture_batch(batch: list[dict]):
                 work["df"] = add_new_salons(batch, work["df"])
                 save_data(work["df"])
                 saved_count[0] += len(batch)
+                scrape_session_new.extend(batch)
                 for row in batch:
                     existing_urls.add(row["サロンURL"])
 
@@ -413,6 +431,19 @@ if st.button(
                     fetch_phone=fetch_phone,
                     on_prefecture_done=save_prefecture_batch if not nationwide_search else None,
                 ))
+
+            if scrape_session_new:
+                st.session_state.last_scrape_new = normalize_phones_in_df(
+                    pd.DataFrame(scrape_session_new)
+                )
+            elif results:
+                st.session_state.last_scrape_new = normalize_phones_in_df(
+                    pd.DataFrame(results)
+                )
+            else:
+                st.session_state.last_scrape_new = pd.DataFrame(
+                    columns=st.session_state.last_scrape_new.columns
+                )
 
             if not nationwide_search and saved_count[0] > 0:
                 df = work["df"]
@@ -460,6 +491,21 @@ if not df.empty:
         (filtered_df["いいね数"] >= likes_filter[0]) &
         (filtered_df["いいね数"] <= likes_filter[1])
     ]
+
+    def apply_list_filters(source_df: pd.DataFrame) -> pd.DataFrame:
+        out = source_df.copy()
+        if out.empty:
+            return out
+        if filter_genre:
+            out = out[out["ジャンル"].isin(filter_genre)]
+        out = out[
+            (out["いいね数"] >= likes_filter[0]) &
+            (out["いいね数"] <= likes_filter[1])
+        ]
+        return out.sort_values("いいね数", ascending=True)
+
+    export_all_df = apply_list_filters(df)
+    export_new_df = apply_list_filters(st.session_state.last_scrape_new)
     
     # テーブル表示
     st.dataframe(
@@ -474,23 +520,46 @@ if not df.empty:
     # コピー・ダウンロード・クリア
     st.markdown("---")
     st.subheader("📤 データ出力")
-    
-    col1, col2, col3 = st.columns(3)
+
+    new_count = len(export_new_df)
+    all_count = len(export_all_df)
+    st.caption(
+        f"今回の新規: {new_count}件 / 登録済み合計: {all_count}件"
+    )
+
+    col1, col2 = st.columns(2)
     with col1:
-        create_copy_button(filtered_df.sort_values("いいね数", ascending=True))
+        create_copy_button(
+            export_new_df,
+            "📋 今回分のみコピー",
+            button_id="copy_new",
+        )
     with col2:
-        csv_data = prepare_for_spreadsheet(filtered_df).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        create_copy_button(
+            export_all_df,
+            "📋 全件コピー（過去分含む）",
+            button_id="copy_all",
+        )
+
+    col3, col4 = st.columns(2)
+    with col3:
+        csv_data = prepare_for_spreadsheet(export_all_df).to_csv(
+            index=False, encoding="utf-8-sig"
+        ).encode("utf-8-sig")
         st.download_button(
-            "📥 CSVダウンロード",
+            "📥 CSVダウンロード（全件）",
             csv_data,
             f"salons_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             "text/csv",
-            use_container_width=True
+            use_container_width=True,
         )
-    with col3:
+    with col4:
         if st.button("🗑️ データクリア", use_container_width=True):
             if DATA_FILE.exists():
                 DATA_FILE.unlink()
+            st.session_state.last_scrape_new = pd.DataFrame(
+                columns=st.session_state.last_scrape_new.columns
+            )
             st.rerun()
 else:
     st.info("まだデータがありません。スクレイピングを実行してください。")
