@@ -2,8 +2,10 @@
 ミニモ サロンスクレイパー GUI
 Streamlit アプリケーション
 """
+import base64
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Streamlit Cloud（サブディレクトリ実行）でも同フォルダのモジュールを読めるようにする
 _APP_ROOT = Path(__file__).resolve().parent
@@ -93,6 +95,101 @@ def create_copy_button(
     </script>
     """
     components.html(copy_js, height=50)
+
+
+def create_csv_download_button(
+    df: pd.DataFrame,
+    button_text: str = "📥 CSVを保存",
+    button_id: str = "csv_download",
+    filename: Optional[str] = None,
+):
+    """スマホでも画面遷移しにくいCSV保存（共有シート or 端末保存）"""
+    if df.empty:
+        st.caption(f"{button_text}（0件）")
+        return
+
+    if not filename:
+        filename = f"salons_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+
+    csv_bytes = prepare_for_spreadsheet(df).to_csv(
+        index=False, encoding="utf-8-sig"
+    ).encode("utf-8-sig")
+    b64 = base64.b64encode(csv_bytes).decode("ascii")
+    btn_class = f"dl-btn-{button_id}"
+    fn_name = f"downloadCsv_{button_id}"
+
+    download_js = f"""
+    <style>
+        .{btn_class} {{
+            background-color: #ff4b4b;
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            width: 100%;
+        }}
+        .{btn_class}.done {{
+            background-color: #00c853;
+        }}
+        .{btn_class}-hint {{
+            font-size: 12px;
+            color: #666;
+            margin-top: 6px;
+            line-height: 1.4;
+        }}
+    </style>
+    <button class="{btn_class}" onclick="{fn_name}()">
+        {button_text}（{len(df)}件）
+    </button>
+    <p class="{btn_class}-hint">
+        スマホ: 共有メニューから「ファイルに保存」。キャンセルでこの画面に戻れます。
+    </p>
+    <script>
+        function {fn_name}() {{
+            const bytes = Uint8Array.from(atob("{b64}"), c => c.charCodeAt(0));
+            const blob = new Blob([bytes], {{ type: "text/csv;charset=utf-8" }});
+            const file = new File([blob], "{filename}", {{ type: "text/csv" }});
+            const btn = document.querySelector(".{btn_class}");
+
+            function done() {{
+                btn.textContent = "✅ 保存メニューを開きました";
+                btn.classList.add("done");
+                setTimeout(function() {{
+                    btn.textContent = "{button_text}（{len(df)}件）";
+                    btn.classList.remove("done");
+                }}, 2500);
+            }}
+
+            if (navigator.canShare && navigator.canShare({{ files: [file] }})) {{
+                navigator.share({{ files: [file], title: "{filename}" }})
+                    .then(done)
+                    .catch(function(err) {{
+                        if (err && err.name === "AbortError") return;
+                        fallbackDownload();
+                    }});
+                return;
+            }}
+            fallbackDownload();
+
+            function fallbackDownload() {{
+
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "{filename}";
+                a.rel = "noopener";
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                done();
+            }}
+        }}
+    </script>
+    """
+    components.html(download_js, height=88)
 
 
 def render_backup_restore(key_prefix: str, *, compact: bool = False) -> None:
@@ -577,15 +674,10 @@ if not df.empty:
 
     col3, col4 = st.columns(2)
     with col3:
-        csv_data = prepare_for_spreadsheet(export_all_df).to_csv(
-            index=False, encoding="utf-8-sig"
-        ).encode("utf-8-sig")
-        st.download_button(
-            "📥 CSVダウンロード（全件）",
-            csv_data,
-            f"salons_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            "text/csv",
-            use_container_width=True,
+        create_csv_download_button(
+            export_all_df,
+            "📥 CSVを保存（全件）",
+            button_id="csv_all",
         )
     with col4:
         if st.session_state.confirm_clear:
