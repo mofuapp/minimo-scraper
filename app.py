@@ -2,14 +2,21 @@
 ミニモ サロンスクレイパー GUI
 Streamlit アプリケーション
 """
+import sys
+from pathlib import Path
+
+# Streamlit Cloud（サブディレクトリ実行）でも同フォルダのモジュールを読めるようにする
+_APP_ROOT = Path(__file__).resolve().parent
+if str(_APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_APP_ROOT))
+
 import streamlit as st
 import pandas as pd
-from pathlib import Path
 from datetime import datetime
 import streamlit.components.v1 as components
 
 from scraper import CATEGORIES, PREFECTURES, SMALL_PREFECTURES
-from data_store import (
+from salon_data_store import (
     DATA_FILE,
     DataLoadError,
     DataSaveError,

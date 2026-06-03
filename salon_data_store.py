@@ -1,9 +1,8 @@
 """
 サロンデータの読み書き（消失防止ルール付き）
 """
-from __future__ import annotations
-
 import os
+from typing import Optional, Tuple, List, Dict
 import re
 import shutil
 from datetime import datetime
@@ -112,7 +111,7 @@ def _prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     return dedupe_by_salon_url(normalize_phones_in_df(out))
 
 
-def backup_before_save() -> Path | None:
+def backup_before_save() -> Optional[Path]:
     if not DATA_FILE.exists():
         return None
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -168,7 +167,7 @@ def save_data_quiet(df: pd.DataFrame) -> None:
     _write_csv(df)
 
 
-def backup_entries() -> list[dict]:
+def backup_entries() -> List[dict]:
     """復元UI用のバックアップ一覧（新しい順）"""
     entries = []
     for path in list_backups():
@@ -191,7 +190,7 @@ def backup_entries() -> list[dict]:
     return entries
 
 
-def restore_from_backup(backup_path: Path | None = None) -> tuple[pd.DataFrame, int]:
+def restore_from_backup(backup_path: Optional[Path] = None) -> Tuple[pd.DataFrame, int]:
     """バックアップCSVを salons.csv に復元（上書き）"""
     backups = list_backups()
     if not backups:
@@ -209,7 +208,7 @@ def restore_from_backup(backup_path: Path | None = None) -> tuple[pd.DataFrame, 
     return df, len(df)
 
 
-def _try_load_latest_backup() -> pd.DataFrame | None:
+def _try_load_latest_backup() -> Optional[pd.DataFrame]:
     try:
         df, _ = restore_from_backup()
         return df
@@ -266,13 +265,13 @@ def records_from_df(df: pd.DataFrame) -> list[dict]:
 
 def add_new_salons(
     new_salons: list[dict], df: pd.DataFrame
-) -> tuple[pd.DataFrame, list[dict]]:
+) -> Tuple[pd.DataFrame, List[dict]]:
     if not new_salons:
         return df, []
 
     existing = set(df["サロンURL"].dropna().astype(str).str.strip().tolist())
-    unique: list[dict] = []
-    seen_in_batch: set[str] = set()
+    unique: List[dict] = []
+    seen_in_batch: set = set()
 
     for salon in new_salons:
         url = salon.get("サロンURL")
@@ -293,7 +292,7 @@ def add_new_salons(
     return dedupe_by_salon_url(merged), unique
 
 
-def import_from_dataframe(imported: pd.DataFrame, df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+def import_from_dataframe(imported: pd.DataFrame, df: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
     records = records_from_df(imported)
     merged, added = add_new_salons(records, df)
     if added:

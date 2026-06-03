@@ -12,6 +12,7 @@ venv/
 
 # Data (local scraping results)
 data/*.csv
+data/backups/
 
 # OS / IDE
 .DS_Store
