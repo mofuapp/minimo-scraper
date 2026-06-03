@@ -14,15 +14,16 @@ from data_store import (
     DataLoadError,
     DataSaveError,
     add_new_salons,
+    backup_entries,
     clear_all_data,
     dedupe_by_salon_url,
     empty_salon_df,
     import_from_dataframe,
     is_ephemeral_host,
-    list_backups,
     load_data,
     normalize_phones_in_df,
     prepare_for_spreadsheet,
+    restore_from_backup,
     save_data,
 )
 
@@ -85,6 +86,59 @@ def create_copy_button(
     </script>
     """
     components.html(copy_js, height=50)
+
+
+def render_backup_restore(key_prefix: str, *, compact: bool = False) -> None:
+    """自動バックアップからデータを復元するUI（呼び出し元のコンテキスト内に描画）"""
+    entries = backup_entries()
+
+    if not entries:
+        st.caption(
+            "自動バックアップはまだありません。"
+            "（保存やクリアの直前に作成されます）"
+        )
+        return
+
+    latest = entries[0]
+
+    def _do_restore(path):
+        try:
+            _, count = restore_from_backup(path)
+            st.success(f"✅ {count}件を復元しました")
+            st.rerun()
+        except DataLoadError as e:
+            st.error(str(e))
+
+    if compact:
+        st.caption(f"バックアップ {len(entries)}件（最新 {latest['rows']}件）")
+    else:
+        st.caption(
+            f"データクリア後はここから戻せます。"
+            f" 最新: {latest['mtime']} · **{latest['rows']}件**"
+        )
+
+    if st.button(
+        f"↩️ 最新のバックアップを復元（{latest['rows']}件）",
+        key=f"{key_prefix}_latest",
+        type="primary",
+        use_container_width=True,
+    ):
+        _do_restore(latest["path"])
+
+    with st.expander("別のバックアップを選ぶ"):
+        labels = [e["label"] for e in entries]
+        picked = st.selectbox(
+            "復元するバックアップ",
+            options=labels,
+            key=f"{key_prefix}_select",
+        )
+        path = next(e["path"] for e in entries if e["label"] == picked)
+        if st.button(
+            "このバックアップで復元",
+            key=f"{key_prefix}_pick",
+            use_container_width=True,
+        ):
+            _do_restore(path)
 
 ICON_PATH = Path(__file__).parent / ".streamlit" / "app-icon.png"
 APPLE_ICON_PATH = Path(__file__).parent / ".streamlit" / "apple-touch-icon.png"
@@ -195,10 +249,6 @@ if uploaded_csv is not None:
             st.rerun()
         except Exception as e:
             st.sidebar.error(f"復元失敗: {e}")
-
-backups = list_backups()
-if backups:
-    st.sidebar.caption(f"自動バックアップ: {len(backups)}件（最新 {backups[0].name}）")
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 検索設定")
@@ -317,6 +367,8 @@ except DataLoadError as e:
     df = empty_salon_df()
 
 existing_urls = set(df["サロンURL"].dropna().tolist())
+with st.sidebar.expander("💾 バックアップから復元", expanded=df.empty and bool(backup_entries())):
+    render_backup_restore("sidebar", compact=True)
 
 if "last_scrape_new" not in st.session_state:
     st.session_state.last_scrape_new = empty_salon_df()
@@ -329,6 +381,8 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader("📊 現在のデータ")
     st.metric("登録サロン数", f"{len(df)}件")
+    if df.empty and backup_entries():
+        render_backup_restore("header")
 
 with col2:
     st.subheader("🔍 検索設定")
@@ -542,7 +596,15 @@ if not df.empty:
             st.session_state.confirm_clear = True
             st.rerun()
 else:
-    st.info("まだデータがありません。スクレイピングを実行してください。")
+    if backup_entries():
+        st.warning("登録データがありません。バックアップから復元できます。")
+        render_backup_restore("list_empty")
+        st.caption("手元のCSVがある場合は、左サイドバーの「CSVから復元」も使えます。")
+    else:
+        st.info(
+            "まだデータがありません。スクレイピングを実行するか、"
+            "サイドバーの「CSVから復元」で以前のCSVを読み込んでください。"
+        )
 
 # フッター
 st.markdown("---")

@@ -118,3 +118,13 @@ def test_backup_created_on_save(isolated_data):
     ds.save_data(_sample_rows(4))
     backups = ds.list_backups()
     assert len(backups) >= 1
+
+
+def test_restore_after_clear(isolated_data):
+    ds.save_data(_sample_rows(5))
+    ds.clear_all_data()
+    assert ds.load_data().empty
+
+    restored, count = ds.restore_from_backup()
+    assert count == 5
+    assert len(ds.load_data()) == 5

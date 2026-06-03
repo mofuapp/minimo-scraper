@@ -168,16 +168,53 @@ def save_data_quiet(df: pd.DataFrame) -> None:
     _write_csv(df)
 
 
-def _try_load_latest_backup() -> pd.DataFrame | None:
+def backup_entries() -> list[dict]:
+    """復元UI用のバックアップ一覧（新しい順）"""
+    entries = []
     for path in list_backups():
         try:
-            df = _prepare_df(_read_csv(path))
-            if not df.empty:
-                save_data_quiet(df)
-                return df
+            raw = _read_csv(path)
+            mtime = datetime.fromtimestamp(path.stat().st_mtime).strftime(
+                "%Y-%m-%d %H:%M"
+            )
+            entries.append(
+                {
+                    "path": path,
+                    "name": path.name,
+                    "rows": len(raw),
+                    "mtime": mtime,
+                    "label": f"{mtime} · {len(raw)}件 · {path.name}",
+                }
+            )
         except Exception:
             continue
-    return None
+    return entries
+
+
+def restore_from_backup(backup_path: Path | None = None) -> tuple[pd.DataFrame, int]:
+    """バックアップCSVを salons.csv に復元（上書き）"""
+    backups = list_backups()
+    if not backups:
+        raise DataLoadError("復元できるバックアップがありません。")
+
+    path = backup_path or backups[0]
+    if not path.exists():
+        raise DataLoadError(f"バックアップが見つかりません: {path.name}")
+
+    df = _prepare_df(_read_csv(path))
+    if df.empty:
+        raise DataLoadError("選択したバックアップにデータがありません。")
+
+    save_data_quiet(df)
+    return df, len(df)
+
+
+def _try_load_latest_backup() -> pd.DataFrame | None:
+    try:
+        df, _ = restore_from_backup()
+        return df
+    except DataLoadError:
+        return None
 
 
 def load_data() -> pd.DataFrame:
