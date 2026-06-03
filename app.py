@@ -6,68 +6,25 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
-import re
 import streamlit.components.v1 as components
 
 from scraper import CATEGORIES, PREFECTURES, SMALL_PREFECTURES
-
-
-def normalize_phone_digits(phone) -> str:
-    """電話番号を数字のみに正規化（スプシで0が消えた分を復元）"""
-    if phone is None or (isinstance(phone, float) and pd.isna(phone)):
-        return ""
-    s = str(phone).strip()
-    if not s or s.lower() == "nan":
-        return ""
-    if s.startswith("'"):
-        s = s[1:].strip()
-    if s.endswith(".0"):
-        s = s[:-2]
-    digits = re.sub(r"\D", "", s)
-    if not digits:
-        return ""
-    if len(digits) == 9:
-        digits = "0" + digits
-    elif len(digits) == 10 and not digits.startswith("0"):
-        digits = "0" + digits
-    return digits
-
-
-def format_phone_for_spreadsheet(phone) -> str:
-    """スプレッドシート用に電話番号の先頭0を保持（'を付与）"""
-    digits = normalize_phone_digits(phone)
-    if not digits:
-        return ""
-    return f"'{digits}"
-
-
-def normalize_phones_in_df(df: pd.DataFrame) -> pd.DataFrame:
-    """DataFrame内の電話番号をスプシ用形式に統一"""
-    if df.empty or "電話番号" not in df.columns:
-        return df
-    out = df.copy()
-    out["電話番号"] = out["電話番号"].apply(format_phone_for_spreadsheet)
-    return out
-
-
-def dedupe_by_salon_url(df: pd.DataFrame, keep: str = "last") -> pd.DataFrame:
-    """サロンURLで重複行を除去（同一URLは取得日時が新しい方を残す）"""
-    if df.empty or "サロンURL" not in df.columns:
-        return df
-    out = df.copy()
-    out["サロンURL"] = out["サロンURL"].astype(str).str.strip()
-    out = out[out["サロンURL"].notna() & (out["サロンURL"] != "") & (out["サロンURL"] != "nan")]
-    if "取得日時" in out.columns:
-        out = out.sort_values("取得日時", ascending=True)
-    return out.drop_duplicates(subset=["サロンURL"], keep=keep).reset_index(drop=True)
-
-
-def prepare_for_spreadsheet(df: pd.DataFrame) -> pd.DataFrame:
-    """コピー・CSV出力用に電話番号を整形"""
-    out = df.copy()
-    if "電話番号" in out.columns:
-        out["電話番号"] = out["電話番号"].apply(format_phone_for_spreadsheet)
-    return out
+from data_store import (
+    DATA_FILE,
+    DataLoadError,
+    DataSaveError,
+    add_new_salons,
+    clear_all_data,
+    dedupe_by_salon_url,
+    empty_salon_df,
+    import_from_dataframe,
+    is_ephemeral_host,
+    list_backups,
+    load_data,
+    normalize_phones_in_df,
+    prepare_for_spreadsheet,
+    save_data,
+)
 
 
 def create_copy_button(
@@ -129,9 +86,6 @@ def create_copy_button(
     """
     components.html(copy_js, height=50)
 
-# データファイルパス
-DATA_DIR = Path(__file__).parent / "data"
-DATA_FILE = DATA_DIR / "salons.csv"
 ICON_PATH = Path(__file__).parent / ".streamlit" / "app-icon.png"
 APPLE_ICON_PATH = Path(__file__).parent / ".streamlit" / "apple-touch-icon.png"
 ICON_GITHUB_URL = (
@@ -194,71 +148,6 @@ def inject_home_screen_icon(icon_url: str) -> None:
     )
 
 
-def load_data() -> pd.DataFrame:
-    """CSVからデータを読み込み"""
-    DATA_DIR.mkdir(exist_ok=True)
-    
-    if DATA_FILE.exists():
-        try:
-            df = pd.read_csv(
-                DATA_FILE,
-                encoding="utf-8-sig",
-                dtype={"電話番号": str},
-            )
-            normalized = dedupe_by_salon_url(normalize_phones_in_df(df))
-            if len(normalized) < len(df):
-                normalized.to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
-            elif "電話番号" in df.columns and not normalized["電話番号"].equals(
-                df["電話番号"].astype(str)
-            ):
-                normalized.to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
-            return normalized
-        except:
-            pass
-    
-    return pd.DataFrame(columns=[
-        "サロン名", "ジャンル", "住所", "電話番号",
-        "サロンURL", "いいね数", "取得日時"
-    ])
-
-
-def save_data(df: pd.DataFrame):
-    """CSVにデータを保存"""
-    DATA_DIR.mkdir(exist_ok=True)
-    dedupe_by_salon_url(normalize_phones_in_df(df)).to_csv(
-        DATA_FILE, index=False, encoding="utf-8-sig"
-    )
-
-
-def add_new_salons(
-    new_salons: list[dict], df: pd.DataFrame
-) -> tuple[pd.DataFrame, list[dict]]:
-    """新しいサロン情報を追加（URL重複は1件のみ）"""
-    if not new_salons:
-        return df, []
-
-    existing = set(df["サロンURL"].dropna().astype(str).str.strip().tolist())
-    unique: list[dict] = []
-    seen_in_batch: set[str] = set()
-
-    for salon in new_salons:
-        url = salon.get("サロンURL")
-        if not url:
-            continue
-        url = str(url).strip()
-        if url in existing or url in seen_in_batch:
-            continue
-        seen_in_batch.add(url)
-        unique.append(salon)
-
-    if not unique:
-        return df, []
-
-    new_df = pd.DataFrame(unique)
-    merged = normalize_phones_in_df(pd.concat([df, new_df], ignore_index=True))
-    return dedupe_by_salon_url(merged), unique
-
-
 # ページ設定
 _page_icon = get_page_icon()
 st.set_page_config(
@@ -273,7 +162,45 @@ inject_home_screen_icon(ICON_GITHUB_URL)
 st.title("💅 ミニモ サロンスクレイパー")
 st.markdown("お気に入り数が少ないサロンを検索して収集します")
 
-# サイドバー設定
+if is_ephemeral_host():
+    st.error(
+        "**クラウド版のデータは再起動・更新で消えます。** "
+        "スクレイピング後は必ず「CSVダウンロード」でバックアップを取ってください。"
+        "消えた場合は下の「CSVから復元」で戻せます。"
+    )
+else:
+    st.info(
+        "データは `data/salons.csv` に保存されます。"
+        "念のため定期的にCSVダウンロードをおすすめします。"
+    )
+
+# サイドバー: データ復元
+st.sidebar.header("💾 データ管理")
+uploaded_csv = st.sidebar.file_uploader(
+    "CSVから復元",
+    type=["csv"],
+    help="以前ダウンロードした salons_*.csv を選ぶと、既存データにマージします",
+)
+if uploaded_csv is not None:
+    if st.sidebar.button("復元を実行", use_container_width=True):
+        try:
+            imported = pd.read_csv(
+                uploaded_csv,
+                encoding="utf-8-sig",
+                dtype={"電話番号": str},
+            )
+            current = load_data()
+            merged, added = import_from_dataframe(imported, current)
+            st.sidebar.success(f"✅ {added}件を追加（合計{len(merged)}件）")
+            st.rerun()
+        except Exception as e:
+            st.sidebar.error(f"復元失敗: {e}")
+
+backups = list_backups()
+if backups:
+    st.sidebar.caption(f"自動バックアップ: {len(backups)}件（最新 {backups[0].name}）")
+
+st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 検索設定")
 
 # カテゴリ選択
@@ -383,16 +310,18 @@ else:
         st.sidebar.warning("都道府県を選択してください")
 
 # データ読み込み
-df = load_data()
+try:
+    df = load_data()
+except DataLoadError as e:
+    st.error(f"データ読み込みエラー: {e}")
+    df = empty_salon_df()
+
 existing_urls = set(df["サロンURL"].dropna().tolist())
 
 if "last_scrape_new" not in st.session_state:
-    st.session_state.last_scrape_new = pd.DataFrame(
-        columns=[
-            "サロン名", "ジャンル", "住所", "電話番号",
-            "サロンURL", "いいね数", "取得日時",
-        ]
-    )
+    st.session_state.last_scrape_new = empty_salon_df()
+if "confirm_clear" not in st.session_state:
+    st.session_state.confirm_clear = False
 
 # メインエリア
 col1, col2 = st.columns([2, 1])
@@ -447,7 +376,11 @@ if st.button(
                 work["df"], added = add_new_salons(batch, work["df"])
                 if not added:
                     return
-                save_data(work["df"])
+                try:
+                    save_data(work["df"])
+                except DataSaveError as e:
+                    st.error(f"保存エラー: {e}")
+                    raise
                 saved_count[0] += len(added)
                 scrape_session_new.extend(added)
                 for row in added:
@@ -472,16 +405,18 @@ if st.button(
                 )
             elif results:
                 df, added = add_new_salons(results, df)
-                save_data(df)
+                try:
+                    save_data(df)
+                except DataSaveError as e:
+                    st.error(f"保存エラー: {e}")
+                    raise
                 st.session_state.last_scrape_new = (
                     dedupe_by_salon_url(normalize_phones_in_df(pd.DataFrame(added)))
                     if added
-                    else pd.DataFrame(columns=st.session_state.last_scrape_new.columns)
+                    else empty_salon_df()
                 )
             else:
-                st.session_state.last_scrape_new = pd.DataFrame(
-                    columns=st.session_state.last_scrape_new.columns
-                )
+                st.session_state.last_scrape_new = empty_salon_df()
 
             new_added_count = len(st.session_state.last_scrape_new)
             if new_added_count > 0:
@@ -592,12 +527,19 @@ if not df.empty:
             use_container_width=True,
         )
     with col4:
-        if st.button("🗑️ データクリア", use_container_width=True):
-            if DATA_FILE.exists():
-                DATA_FILE.unlink()
-            st.session_state.last_scrape_new = pd.DataFrame(
-                columns=st.session_state.last_scrape_new.columns
-            )
+        if st.session_state.confirm_clear:
+            st.warning("登録データをすべて削除します。よろしいですか？")
+            c_yes, c_no = st.columns(2)
+            if c_yes.button("削除する", type="primary", use_container_width=True):
+                clear_all_data()
+                st.session_state.last_scrape_new = empty_salon_df()
+                st.session_state.confirm_clear = False
+                st.rerun()
+            if c_no.button("キャンセル", use_container_width=True):
+                st.session_state.confirm_clear = False
+                st.rerun()
+        elif st.button("🗑️ データクリア", use_container_width=True):
+            st.session_state.confirm_clear = True
             st.rerun()
 else:
     st.info("まだデータがありません。スクレイピングを実行してください。")
