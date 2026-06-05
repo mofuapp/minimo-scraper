@@ -14,7 +14,7 @@ if str(_APP_ROOT) not in sys.path:
 
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import date, datetime, timedelta
 import streamlit.components.v1 as components
 
 from scraper import CATEGORIES, PREFECTURES, SMALL_PREFECTURES
@@ -397,6 +397,45 @@ fetch_phone = st.sidebar.checkbox(
     help="ONで電話番号も取得（詳細ページは住所取得のため常に参照します）"
 )
 
+# 最終更新日フィルタ
+st.sidebar.markdown("---")
+st.sidebar.subheader("📅 最終更新日")
+filter_by_updated = st.sidebar.checkbox(
+    "更新日で絞る",
+    value=False,
+    help="ミニモ掲載ページの「○年○月○日更新」でフィルタします",
+)
+today = datetime.now().date()
+update_min_date = None
+update_max_date = None
+if filter_by_updated:
+    preset = st.sidebar.selectbox(
+        "期間",
+        ["直近7日", "直近14日", "直近30日", "直近90日", "カスタム"],
+        index=2,
+    )
+    if preset == "直近7日":
+        update_min_date = today - timedelta(days=7)
+        update_max_date = today
+    elif preset == "直近14日":
+        update_min_date = today - timedelta(days=14)
+        update_max_date = today
+    elif preset == "直近30日":
+        update_min_date = today - timedelta(days=30)
+        update_max_date = today
+    elif preset == "直近90日":
+        update_min_date = today - timedelta(days=90)
+        update_max_date = today
+    else:
+        update_min_date = st.sidebar.date_input(
+            "この日以降",
+            value=today - timedelta(days=30),
+        )
+        update_max_date = st.sidebar.date_input("この日まで", value=today)
+    st.sidebar.caption(
+        f"対象: {update_min_date} 〜 {update_max_date}"
+    )
+
 # 検索範囲
 st.sidebar.markdown("---")
 st.sidebar.subheader("🗾 検索範囲")
@@ -491,10 +530,16 @@ with col1:
 with col2:
     st.subheader("🔍 検索設定")
     cat_text = "全カテゴリ" if not selected_categories else f"{len(selected_categories)}カテゴリ"
+    update_text = ""
+    if filter_by_updated and update_min_date and update_max_date:
+        update_text = f" / 更新 {update_min_date}〜{update_max_date}"
     if nationwide_search:
-        st.info(f"{cat_text} / 🌏全国 / お気に入り{max_likes}以下")
+        st.info(f"{cat_text} / 🌏全国 / お気に入り{max_likes}以下{update_text}")
     else:
-        st.info(f"{cat_text} / {len(search_prefectures)}県 / お気に入り{max_likes}以下")
+        st.info(
+            f"{cat_text} / {len(search_prefectures)}県 / "
+            f"お気に入り{max_likes}以下{update_text}"
+        )
 
 # スクレイピング開始ボタン（全国検索または都道府県指定の場合に有効）
 can_search = nationwide_search or (len(search_prefectures) > 0)
@@ -555,6 +600,8 @@ if st.button(
                     nationwide=nationwide_search,
                     fetch_phone=fetch_phone,
                     on_prefecture_done=save_prefecture_batch if not nationwide_search else None,
+                    min_updated_date=update_min_date if filter_by_updated else None,
+                    max_updated_date=update_max_date if filter_by_updated else None,
                 ))
 
             if scrape_session_new:
@@ -613,6 +660,17 @@ if not df.empty:
             value=(0, max(max_fav, 1))
         )
     
+    def _filter_by_updated_col(frame: pd.DataFrame) -> pd.DataFrame:
+        if not filter_by_updated or "最終更新日" not in frame.columns:
+            return frame
+        parsed = pd.to_datetime(frame["最終更新日"], errors="coerce")
+        mask = parsed.notna()
+        if update_min_date:
+            mask &= parsed.dt.date >= update_min_date
+        if update_max_date:
+            mask &= parsed.dt.date <= update_max_date
+        return frame[mask]
+
     filtered_df = df.copy()
     if filter_genre:
         filtered_df = filtered_df[filtered_df["ジャンル"].isin(filter_genre)]
@@ -620,6 +678,7 @@ if not df.empty:
         (filtered_df["いいね数"] >= likes_filter[0]) &
         (filtered_df["いいね数"] <= likes_filter[1])
     ]
+    filtered_df = _filter_by_updated_col(filtered_df)
 
     def apply_list_filters(source_df: pd.DataFrame) -> pd.DataFrame:
         out = dedupe_by_salon_url(source_df.copy())
@@ -631,7 +690,9 @@ if not df.empty:
             (out["いいね数"] >= likes_filter[0]) &
             (out["いいね数"] <= likes_filter[1])
         ]
-        return out.sort_values("いいね数", ascending=True)
+        out = _filter_by_updated_col(out)
+        sort_cols = ["最終更新日", "いいね数"] if "最終更新日" in out.columns else ["いいね数"]
+        return out.sort_values(sort_cols, ascending=[False, True])
 
     export_all_df = apply_list_filters(df)
     export_new_df = apply_list_filters(st.session_state.last_scrape_new)
@@ -639,12 +700,14 @@ if not df.empty:
     # テーブル表示（URL重複は表示上も1件に）
     display_df = dedupe_by_salon_url(filtered_df)
 
+    sort_cols = ["最終更新日", "いいね数"] if "最終更新日" in display_df.columns else ["いいね数"]
     st.dataframe(
-        display_df.sort_values("いいね数", ascending=True),
+        display_df.sort_values(sort_cols, ascending=[False, True]),
         use_container_width=True,
         column_config={
             "サロンURL": st.column_config.LinkColumn("URL"),
-            "いいね数": st.column_config.NumberColumn("お気に入り", format="%d")
+            "いいね数": st.column_config.NumberColumn("お気に入り", format="%d"),
+            "最終更新日": st.column_config.TextColumn("最終更新"),
         }
     )
     

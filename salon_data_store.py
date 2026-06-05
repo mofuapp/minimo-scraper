@@ -17,6 +17,7 @@ SALON_COLUMNS = [
     "電話番号",
     "サロンURL",
     "いいね数",
+    "最終更新日",
     "取得日時",
 ]
 
@@ -104,10 +105,11 @@ def _read_csv(path: Path) -> pd.DataFrame:
 
 
 def _prepare_df(df: pd.DataFrame) -> pd.DataFrame:
-    missing = [c for c in SALON_COLUMNS if c not in df.columns]
-    if missing:
-        raise DataLoadError(f"CSVに必須列がありません: {', '.join(missing)}")
-    out = df[SALON_COLUMNS].copy()
+    out = df.copy()
+    for col in SALON_COLUMNS:
+        if col not in out.columns:
+            out[col] = ""
+    out = out[SALON_COLUMNS].copy()
     return dedupe_by_salon_url(normalize_phones_in_df(out))
 
 

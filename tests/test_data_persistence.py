@@ -33,6 +33,7 @@ def _sample_rows(n: int = 3) -> pd.DataFrame:
                 "電話番号": f"'06{i:08d}",
                 "サロンURL": f"https://minimodel.jp/r/test{i}",
                 "いいね数": i,
+                "最終更新日": f"2026-06-0{(i % 9) + 1}",
                 "取得日時": f"2026-06-01 10:00:{i:02d}",
             }
         )
@@ -70,6 +71,7 @@ def test_dedupe_keeps_one_per_url(isolated_data):
                 "電話番号": "",
                 "サロンURL": "https://minimodel.jp/r/same",
                 "いいね数": 1,
+                "最終更新日": "2026-06-01",
                 "取得日時": "2026-06-01 10:00:00",
             },
             {
@@ -79,6 +81,7 @@ def test_dedupe_keeps_one_per_url(isolated_data):
                 "電話番号": "",
                 "サロンURL": "https://minimodel.jp/r/same",
                 "いいね数": 2,
+                "最終更新日": "2026-06-02",
                 "取得日時": "2026-06-02 10:00:00",
             },
         ]
@@ -97,6 +100,7 @@ def test_add_new_salons_skips_duplicate_in_batch(isolated_data):
         "電話番号": "",
         "サロンURL": "https://minimodel.jp/r/dup",
         "いいね数": 3,
+        "最終更新日": "2026-06-01",
         "取得日時": "2026-06-01 12:00:00",
     }
     merged, added = ds.add_new_salons([dup, dup], base)

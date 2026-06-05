@@ -4,10 +4,48 @@
 """
 import asyncio
 import re
-from datetime import datetime
+from datetime import date, datetime
 from playwright.async_api import async_playwright, Page
 from typing import Optional, Callable, List
 import urllib.parse
+
+
+def parse_last_updated_from_text(
+    text: str, reference: Optional[datetime] = None
+) -> Optional[date]:
+    """ミニモ詳細ページの「2026年6月4日更新」などを日付に変換"""
+    if not text:
+        return None
+    m = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日\s*更新", text)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    return None
+
+
+def format_last_updated(value: Optional[date]) -> str:
+    if not value:
+        return ""
+    return value.strftime("%Y-%m-%d")
+
+
+def passes_update_date_filter(
+    last_updated: Optional[date],
+    min_date: Optional[date] = None,
+    max_date: Optional[date] = None,
+) -> bool:
+    """最終更新日の範囲内か（フィルタ未指定なら常にTrue）"""
+    if min_date is None and max_date is None:
+        return True
+    if last_updated is None:
+        return False
+    if min_date and last_updated < min_date:
+        return False
+    if max_date and last_updated > max_date:
+        return False
+    return True
 
 
 class ProgressTracker:
@@ -498,10 +536,13 @@ async def get_salon_detail(
     phone = ""
     location = {"prefecture": "", "city": "", "address": "", "station": ""}
 
+    last_updated = None
     try:
         await page.goto(salon_url, wait_until="domcontentloaded", timeout=15000)
         await page.wait_for_timeout(1000)
 
+        body_text = await page.evaluate("document.body.innerText")
+        last_updated = parse_last_updated_from_text(body_text)
         location = await extract_location_from_page(page)
 
         if fetch_phone:
@@ -541,6 +582,7 @@ async def get_salon_detail(
         "station": location.get("station", ""),
         "phone": phone,
         "matches_target": matches_target,
+        "last_updated": last_updated,
     }
 
 
@@ -615,6 +657,8 @@ async def scrape_prefecture(
     target_categories: list[str] = None,
     max_pages: int = 5,
     fetch_phone: bool = False,
+    min_updated_date: Optional[date] = None,
+    max_updated_date: Optional[date] = None,
 ) -> list[dict]:
     """都道府県をスクレイピング（/list/ 都道府県×カテゴリ・新着順）"""
 
@@ -683,12 +727,28 @@ async def scrape_prefecture(
                         f"  ⏭️ {name[:20]} スキップ（{detected} ≠ {prefecture}）"
                     )
                 continue
+
+            last_updated = detail.get("last_updated")
+            if not passes_update_date_filter(
+                last_updated, min_updated_date, max_updated_date
+            ):
+                if progress:
+                    updated_label = format_last_updated(last_updated) or "不明"
+                    progress.set_message(
+                        f"  ⏭️ {name[:20]} スキップ（更新日 {updated_label}）"
+                    )
+                continue
+
             address = format_address(detail, prefecture)
             phone = detail.get("phone", "") if fetch_phone else ""
 
             found += 1
             if progress:
-                progress.detail_step(f"  ✨ {name[:20]} ({cat_name}) お気に入り: {favorites}")
+                updated_label = format_last_updated(last_updated)
+                progress.detail_step(
+                    f"  ✨ {name[:20]} ({cat_name}) お気に入り:{favorites}"
+                    + (f" 更新:{updated_label}" if updated_label else "")
+                )
 
             results.append({
                 "サロン名": name,
@@ -697,6 +757,7 @@ async def scrape_prefecture(
                 "電話番号": phone,
                 "サロンURL": salon_url,
                 "いいね数": favorites,
+                "最終更新日": format_last_updated(last_updated),
                 "取得日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             })
 
@@ -749,6 +810,8 @@ async def scrape_category_nationwide(
     progress: Optional[ProgressTracker],
     max_pages: int = 10,
     fetch_phone: bool = False,
+    min_updated_date: Optional[date] = None,
+    max_updated_date: Optional[date] = None,
 ) -> list[dict]:
     """カテゴリ全国検索（新着順・ページネーション対応）"""
     
@@ -816,9 +879,24 @@ async def scrape_category_nationwide(
                 page, salon_url, "", fetch_phone=fetch_phone,
             )
 
+            last_updated = detail.get("last_updated")
+            if not passes_update_date_filter(
+                last_updated, min_updated_date, max_updated_date
+            ):
+                if progress:
+                    updated_label = format_last_updated(last_updated) or "不明"
+                    progress.set_message(
+                        f"  ⏭️ {name[:20]} スキップ（更新日 {updated_label}）"
+                    )
+                continue
+
             found += 1
             if progress:
-                progress.detail_step(f"✨ {name[:20]} ({genre}) お気に入り: {favorites}")
+                updated_label = format_last_updated(last_updated)
+                progress.detail_step(
+                    f"✨ {name[:20]} ({genre}) お気に入り:{favorites}"
+                    + (f" 更新:{updated_label}" if updated_label else "")
+                )
 
             results.append({
                 "サロン名": name,
@@ -827,6 +905,7 @@ async def scrape_category_nationwide(
                 "電話番号": detail.get("phone", "") if fetch_phone else "",
                 "サロンURL": salon_url,
                 "いいね数": favorites,
+                "最終更新日": format_last_updated(last_updated),
                 "取得日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             })
 
@@ -857,6 +936,8 @@ async def scrape_minimo(
     nationwide: bool = False,
     fetch_phone: bool = False,
     on_prefecture_done: Optional[Callable[[list[dict]], None]] = None,
+    min_updated_date: Optional[date] = None,
+    max_updated_date: Optional[date] = None,
 ) -> list[dict]:
     """ミニモをスクレイピング（ページネーション対応）"""
     from playwright_setup import ensure_playwright_browsers
@@ -907,6 +988,8 @@ async def scrape_minimo(
                         progress=tracker,
                         max_pages=max_pages,
                         fetch_phone=fetch_phone,
+                        min_updated_date=min_updated_date,
+                        max_updated_date=max_updated_date,
                     )
                     all_results.extend(results)
             else:
@@ -921,6 +1004,8 @@ async def scrape_minimo(
                         target_categories=categories,
                         max_pages=max_pages,
                         fetch_phone=fetch_phone,
+                        min_updated_date=min_updated_date,
+                        max_updated_date=max_updated_date,
                     )
                     all_results.extend(results)
                     if on_prefecture_done and results:
@@ -947,6 +1032,8 @@ def run_scraper(
     nationwide: bool = False,
     fetch_phone: bool = False,
     on_prefecture_done: Optional[Callable[[list[dict]], None]] = None,
+    min_updated_date: Optional[date] = None,
+    max_updated_date: Optional[date] = None,
 ) -> list[dict]:
     """同期実行"""
     return asyncio.run(scrape_minimo(
@@ -959,6 +1046,8 @@ def run_scraper(
         nationwide=nationwide,
         fetch_phone=fetch_phone,
         on_prefecture_done=on_prefecture_done,
+        min_updated_date=min_updated_date,
+        max_updated_date=max_updated_date,
     ))
 
 
