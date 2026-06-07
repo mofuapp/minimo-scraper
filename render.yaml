@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: minimo-scraper-api
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: MINIMO_CORS_ORIGINS
+        value: https://mofuapp.github.io
+      - key: MINIMO_API_KEY
+        generateValue: true
