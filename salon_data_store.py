@@ -23,6 +23,7 @@ SALON_COLUMNS = [
 
 DATA_DIR = Path(__file__).parent / "data"
 DATA_FILE = DATA_DIR / "salons.csv"
+LAST_SESSION_FILE = DATA_DIR / "last_session.csv"
 BACKUP_DIR = DATA_DIR / "backups"
 MAX_BACKUPS = 50
 
@@ -256,6 +257,31 @@ def clear_all_data() -> None:
     if DATA_FILE.exists():
         backup_before_save()
         DATA_FILE.unlink()
+    clear_last_session()
+
+
+def save_last_session(df: pd.DataFrame) -> None:
+    """直近スクレイプで追加した分を保持（今回分コピー用）"""
+    prepared = _prepare_df(df)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if prepared.empty:
+        clear_last_session()
+        return
+    prepared.to_csv(LAST_SESSION_FILE, index=False, encoding="utf-8-sig")
+
+
+def load_last_session() -> pd.DataFrame:
+    if not LAST_SESSION_FILE.exists():
+        return empty_salon_df()
+    try:
+        return _prepare_df(_read_csv(LAST_SESSION_FILE))
+    except Exception:
+        return empty_salon_df()
+
+
+def clear_last_session() -> None:
+    if LAST_SESSION_FILE.exists():
+        LAST_SESSION_FILE.unlink(missing_ok=True)
 
 
 def records_from_df(df: pd.DataFrame) -> list[dict]:

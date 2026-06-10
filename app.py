@@ -25,16 +25,68 @@ from salon_data_store import (
     add_new_salons,
     backup_entries,
     clear_all_data,
+    clear_last_session,
     dedupe_by_salon_url,
     empty_salon_df,
     import_from_dataframe,
     is_ephemeral_host,
     load_data,
+    load_last_session,
     normalize_phones_in_df,
     prepare_for_spreadsheet,
     restore_from_backup,
     save_data,
+    save_last_session,
 )
+
+
+def finalize_scrape_session(added_rows: list[dict]) -> int:
+    """今回追加分をセッション・ファイルに保存"""
+    if not added_rows:
+        st.session_state.last_scrape_new = empty_salon_df()
+        st.session_state.last_scrape_urls = []
+        clear_last_session()
+        return 0
+
+    session_df = dedupe_by_salon_url(
+        normalize_phones_in_df(pd.DataFrame(added_rows))
+    )
+    st.session_state.last_scrape_new = session_df
+    st.session_state.last_scrape_urls = (
+        session_df["サロンURL"].astype(str).str.strip().tolist()
+        if not session_df.empty
+        else []
+    )
+    save_last_session(session_df)
+    return len(session_df)
+
+
+def get_export_new_df(full_df: pd.DataFrame) -> pd.DataFrame:
+    """今回分コピー用データ（セッション消失時もメインDFから復元）"""
+    cached = st.session_state.get("last_scrape_new", empty_salon_df())
+    if isinstance(cached, pd.DataFrame) and not cached.empty:
+        out = dedupe_by_salon_url(cached.copy())
+        if not out.empty:
+            return out
+
+    urls = st.session_state.get("last_scrape_urls") or []
+    if not urls:
+        loaded = load_last_session()
+        if not loaded.empty:
+            urls = loaded["サロンURL"].astype(str).str.strip().tolist()
+
+    if urls and not full_df.empty:
+        url_set = {str(u).strip() for u in urls if str(u).strip()}
+        mask = full_df["サロンURL"].astype(str).str.strip().isin(url_set)
+        out = full_df.loc[mask]
+        if not out.empty:
+            return dedupe_by_salon_url(out.copy())
+
+    loaded = load_last_session()
+    if not loaded.empty:
+        return dedupe_by_salon_url(loaded.copy())
+
+    return empty_salon_df()
 
 
 def create_copy_button(
@@ -557,7 +609,20 @@ with st.sidebar.expander("💾 バックアップから復元", expanded=df.empt
     render_backup_restore("sidebar", compact=True)
 
 if "last_scrape_new" not in st.session_state:
-    st.session_state.last_scrape_new = empty_salon_df()
+    loaded_session = load_last_session()
+    st.session_state.last_scrape_new = (
+        loaded_session if not loaded_session.empty else empty_salon_df()
+    )
+if "last_scrape_urls" not in st.session_state:
+    if not st.session_state.last_scrape_new.empty:
+        st.session_state.last_scrape_urls = (
+            st.session_state.last_scrape_new["サロンURL"]
+            .astype(str)
+            .str.strip()
+            .tolist()
+        )
+    else:
+        st.session_state.last_scrape_urls = []
 if "confirm_clear" not in st.session_state:
     st.session_state.confirm_clear = False
 
@@ -647,29 +712,19 @@ if st.button(
                     max_updated_date=update_max_date if filter_by_updated else None,
                 ))
 
-            if scrape_session_new:
-                st.session_state.last_scrape_new = dedupe_by_salon_url(
-                    normalize_phones_in_df(pd.DataFrame(scrape_session_new))
-                )
-            elif results:
+            session_added = list(scrape_session_new)
+            if not session_added and results:
                 df, added = add_new_salons(results, df)
                 try:
                     save_data(df)
                 except DataSaveError as e:
                     st.error(f"保存エラー: {e}")
                     raise
-                st.session_state.last_scrape_new = (
-                    dedupe_by_salon_url(normalize_phones_in_df(pd.DataFrame(added)))
-                    if added
-                    else empty_salon_df()
-                )
-            else:
-                st.session_state.last_scrape_new = empty_salon_df()
+                session_added = added
 
-            new_added_count = len(st.session_state.last_scrape_new)
+            new_added_count = finalize_scrape_session(session_added)
             if new_added_count > 0:
-                if not nationwide_search:
-                    df = work["df"]
+                df = load_data()
                 st.success(f"✅ {new_added_count}件の新しいサロンを追加しました！")
             else:
                 st.warning(
@@ -738,8 +793,7 @@ if not df.empty:
         return out.sort_values(sort_cols, ascending=[False, True])
 
     export_all_df = apply_list_filters(df)
-    # 今回分はスクレイプ直後の全件をコピー（一覧フィルタで0件にならないようにする）
-    export_new_df = dedupe_by_salon_url(st.session_state.last_scrape_new.copy())
+    export_new_df = get_export_new_df(df)
     
     # テーブル表示（URL重複は表示上も1件に）
     display_df = dedupe_by_salon_url(filtered_df)
@@ -793,6 +847,7 @@ if not df.empty:
             if c_yes.button("削除する", type="primary", use_container_width=True):
                 clear_all_data()
                 st.session_state.last_scrape_new = empty_salon_df()
+                st.session_state.last_scrape_urls = []
                 st.session_state.confirm_clear = False
                 st.rerun()
             if c_no.button("キャンセル", use_container_width=True):

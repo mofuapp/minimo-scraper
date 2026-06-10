@@ -16,9 +16,11 @@ def isolated_data(monkeypatch, tmp_path):
     data_dir = tmp_path / "data"
     backup_dir = data_dir / "backups"
     data_file = data_dir / "salons.csv"
+    last_session_file = data_dir / "last_session.csv"
     monkeypatch.setattr(ds, "DATA_DIR", data_dir)
     monkeypatch.setattr(ds, "DATA_FILE", data_file)
     monkeypatch.setattr(ds, "BACKUP_DIR", backup_dir)
+    monkeypatch.setattr(ds, "LAST_SESSION_FILE", last_session_file)
     return data_file
 
 
@@ -132,3 +134,18 @@ def test_restore_after_clear(isolated_data):
     restored, count = ds.restore_from_backup()
     assert count == 5
     assert len(ds.load_data()) == 5
+
+
+def test_last_session_save_and_load(isolated_data):
+    rows = _sample_rows(2)
+    ds.save_last_session(rows)
+    loaded = ds.load_last_session()
+    assert len(loaded) == 2
+    assert loaded.iloc[0]["サロンURL"] == rows.iloc[0]["サロンURL"]
+
+
+def test_clear_all_data_also_clears_last_session(isolated_data):
+    ds.save_last_session(_sample_rows(2))
+    ds.save_data(_sample_rows(3))
+    ds.clear_all_data()
+    assert ds.load_last_session().empty
