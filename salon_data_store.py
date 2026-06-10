@@ -236,21 +236,20 @@ def load_data() -> pd.DataFrame:
     if raw.empty:
         return empty_salon_df()
 
-    normalized = _prepare_df(raw)
+    before_rows = len(raw)
+    prepared = _prepare_df(raw)
 
-    if normalized.empty and not raw.empty:
-        return normalize_phones_in_df(raw[SALON_COLUMNS].copy())
+    needs_save = len(prepared) < before_rows
+    if "電話番号" in raw.columns and not needs_save:
+        old_phones = raw["電話番号"].fillna("").astype(str)
+        new_phones = prepared["電話番号"].fillna("").astype(str)
+        if len(old_phones) == len(new_phones) and not new_phones.equals(old_phones):
+            needs_save = True
 
-    if len(normalized) < len(raw):
-        save_data_quiet(normalized)
-    else:
-        phone_fixed = normalize_phones_in_df(raw[SALON_COLUMNS].copy())
-        if "電話番号" in raw.columns and not phone_fixed["電話番号"].equals(
-            raw["電話番号"].astype(str)
-        ):
-            save_data_quiet(normalized)
+    if needs_save:
+        save_data_quiet(prepared)
 
-    return normalized
+    return prepared
 
 
 def clear_all_data() -> None:

@@ -11,6 +11,8 @@ from typing import Optional
 _APP_ROOT = Path(__file__).resolve().parent
 if str(_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_APP_ROOT))
+import os
+os.chdir(_APP_ROOT)
 
 import streamlit as st
 import pandas as pd
@@ -18,7 +20,9 @@ from datetime import date, datetime, timedelta
 import streamlit.components.v1 as components
 
 from scraper import CATEGORIES, PREFECTURES, SMALL_PREFECTURES
-from salon_data_store import (
+
+try:
+    from salon_data_store import (
     DATA_FILE,
     DataLoadError,
     DataSaveError,
@@ -37,7 +41,34 @@ from salon_data_store import (
     restore_from_backup,
     save_data,
     save_last_session,
-)
+    )
+except ImportError:
+    import importlib.util
+
+    _store_path = _APP_ROOT / "salon_data_store.py"
+    _spec = importlib.util.spec_from_file_location("salon_data_store", _store_path)
+    if _spec is None or _spec.loader is None:
+        raise
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    DATA_FILE = _mod.DATA_FILE
+    DataLoadError = _mod.DataLoadError
+    DataSaveError = _mod.DataSaveError
+    add_new_salons = _mod.add_new_salons
+    backup_entries = _mod.backup_entries
+    clear_all_data = _mod.clear_all_data
+    clear_last_session = _mod.clear_last_session
+    dedupe_by_salon_url = _mod.dedupe_by_salon_url
+    empty_salon_df = _mod.empty_salon_df
+    import_from_dataframe = _mod.import_from_dataframe
+    is_ephemeral_host = _mod.is_ephemeral_host
+    load_data = _mod.load_data
+    load_last_session = _mod.load_last_session
+    normalize_phones_in_df = _mod.normalize_phones_in_df
+    prepare_for_spreadsheet = _mod.prepare_for_spreadsheet
+    restore_from_backup = _mod.restore_from_backup
+    save_data = _mod.save_data
+    save_last_session = _mod.save_last_session
 
 
 def finalize_scrape_session(added_rows: list[dict]) -> int:

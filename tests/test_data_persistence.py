@@ -149,3 +149,12 @@ def test_clear_all_data_also_clears_last_session(isolated_data):
     ds.save_data(_sample_rows(3))
     ds.clear_all_data()
     assert ds.load_last_session().empty
+
+
+def test_load_data_without_update_date_column(isolated_data):
+    legacy = _sample_rows(2).drop(columns=["最終更新日"])
+    isolated_data.parent.mkdir(parents=True, exist_ok=True)
+    legacy.to_csv(isolated_data, index=False, encoding="utf-8-sig")
+    loaded = ds.load_data()
+    assert len(loaded) == 2
+    assert "最終更新日" in loaded.columns
