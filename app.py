@@ -49,7 +49,7 @@ def create_copy_button(
 
     export_df = prepare_for_spreadsheet(df)
     tsv_data = export_df.to_csv(sep="\t", index=False)
-    escaped_data = tsv_data.replace("`", "'").replace("$", "").replace("\\", "\\\\")
+    b64 = base64.b64encode(tsv_data.encode("utf-8")).decode("ascii")
     btn_class = f"copy-btn-{button_id}"
     fn_name = f"copyToClipboard_{button_id}"
 
@@ -77,19 +77,62 @@ def create_copy_button(
         {button_text}（{len(export_df)}件）
     </button>
     <script>
-        const tsvData_{button_id} = `{escaped_data}`;
+        function decodeTsv_{button_id}() {{
+            return new TextDecoder().decode(
+                Uint8Array.from(atob("{b64}"), function(c) {{ return c.charCodeAt(0); }})
+            );
+        }}
+
+        function copyText_{button_id}(text) {{
+            if (navigator.clipboard && window.isSecureContext) {{
+                return navigator.clipboard.writeText(text);
+            }}
+            return new Promise(function(resolve, reject) {{
+                const ta = document.createElement("textarea");
+                ta.value = text;
+                ta.setAttribute("readonly", "");
+                ta.style.position = "fixed";
+                ta.style.top = "0";
+                ta.style.left = "0";
+                ta.style.opacity = "0";
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                try {{
+                    const ok = document.execCommand("copy");
+                    document.body.removeChild(ta);
+                    ok ? resolve() : reject(new Error("copy failed"));
+                }} catch (err) {{
+                    document.body.removeChild(ta);
+                    reject(err);
+                }}
+            }});
+        }}
 
         function {fn_name}() {{
-            navigator.clipboard.writeText(tsvData_{button_id}).then(function() {{
-                const btn = document.querySelector('.{btn_class}');
-                btn.textContent = '✅ コピーしました！';
-                btn.classList.add('copied');
+            const text = decodeTsv_{button_id}();
+            const btn = document.querySelector(".{btn_class}");
+
+            function showCopied() {{
+                btn.textContent = "✅ コピーしました！";
+                btn.classList.add("copied");
                 setTimeout(function() {{
-                    btn.textContent = '{button_text}（{len(export_df)}件）';
-                    btn.classList.remove('copied');
+                    btn.textContent = "{button_text}（{len(export_df)}件）";
+                    btn.classList.remove("copied");
                 }}, 2000);
-            }}).catch(function(err) {{
-                alert('コピーに失敗しました: ' + err);
+            }}
+
+            copyText_{button_id}(text).then(showCopied).catch(function() {{
+                if (navigator.share) {{
+                    navigator.share({{ text: text, title: "サロンデータ" }})
+                        .then(showCopied)
+                        .catch(function(err) {{
+                            if (err && err.name === "AbortError") return;
+                            alert("コピーに失敗しました。CSV保存をお試しください。");
+                        }});
+                    return;
+                }}
+                alert("コピーに失敗しました。CSV保存をお試しください。");
             }});
         }}
     </script>
@@ -695,7 +738,8 @@ if not df.empty:
         return out.sort_values(sort_cols, ascending=[False, True])
 
     export_all_df = apply_list_filters(df)
-    export_new_df = apply_list_filters(st.session_state.last_scrape_new)
+    # 今回分はスクレイプ直後の全件をコピー（一覧フィルタで0件にならないようにする）
+    export_new_df = dedupe_by_salon_url(st.session_state.last_scrape_new.copy())
     
     # テーブル表示（URL重複は表示上も1件に）
     display_df = dedupe_by_salon_url(filtered_df)
