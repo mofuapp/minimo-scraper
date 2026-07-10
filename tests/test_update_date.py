@@ -65,3 +65,23 @@ def test_prefecture_search_keyword_strips_suffix():
     assert "keyword=%E5%A4%A7%E9%98%AA" in url
     assert "order=updated_datetime" in url
     assert "大阪府" not in urllib_parse.unquote(url)
+
+
+def test_filter_area_list_urls():
+    from scraper import filter_area_list_urls, get_prefecture_index_url
+
+    hrefs = [
+        "/list/2/27/c0/0",
+        "/list/2/27/c60/0",
+        "/list/2/27/c60/0?p=2",
+        "/list/2/27/102/0",
+        "/list/2/28/c60/0",
+    ]
+    urls = filter_area_list_urls(hrefs, "nail", "大阪府")
+    assert set(urls) == {
+        "https://minimodel.jp/list/2/27/c60/0",
+        "https://minimodel.jp/list/2/27/102/0",
+    }
+    assert get_prefecture_index_url("nail", "大阪府") == (
+        "https://minimodel.jp/list/2/27/c0/0"
+    )
