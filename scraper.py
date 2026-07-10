@@ -225,24 +225,29 @@ def category_label_for_salon(salon: dict) -> str:
 
 
 def format_address(location: dict, fallback_prefecture: str = "") -> str:
-    """完全住所を返す（都道府県＋市区町村＋番地・建物名）"""
+    """完全住所を返す（都道府県＋市区町村＋番地・建物名）
+
+    検索対象の都道府県名だけで住所を捏造しない。
+    詳細ページから都道府県が取れない場合は空文字を返す。
+    """
     addr = (location.get("address") or "").strip()
     addr = re.sub(r"\s*\(地図\)\s*$", "", addr).strip()
     if addr and re.search(r"(?:都|道|府|県)", addr):
         return addr
 
-    pref = location.get("prefecture") or fallback_prefecture
-    city = location.get("city", "")
-    street = location.get("street", "")
-    station = location.get("station", "")
+    pref = (location.get("prefecture") or "").strip()
+    city = (location.get("city") or "").strip()
+    street = (location.get("street") or "").strip()
+
+    # 検索県名のフォールバックは、詳細から都道府県が取れたときだけ使う
+    if not pref:
+        return ""
 
     if street:
         return f"{pref}{city}{street}"
     if city:
         return f"{pref}{city}"
-    if pref:
-        return pref
-    return fallback_prefecture
+    return pref
 
 
 def _fill_location_parts(location: dict) -> None:
@@ -451,12 +456,16 @@ async def extract_salons_with_urls(page: Page) -> list[dict]:
                 }
             }
 
-            // 統計が取れない場合のみ0扱い（⭐️5月等の誤検出を避けるためハート正規表現は使わない）
-            if (favorites < 0 && text.includes('詳細を見る')) {
-                favorites = 0;
+            // ハート記号の直後の数字（例: ♥ 12 / ❤️12）
+            if (favorites < 0) {
+                const heartMatch = text.match(/[♥❤♡]\\s*([\\d,]+)/);
+                if (heartMatch) {
+                    favorites = parseInt(heartMatch[1].replace(/,/g, ''), 10);
+                }
             }
 
-            if (favorites < 0) return;
+            // 不明なお気に入り数は0扱いにしない（上限フィルタをすり抜けるため）
+            if (favorites < 0 || Number.isNaN(favorites)) return;
             
             // サロン名を探す
             let name = '';
@@ -718,7 +727,9 @@ async def scrape_prefecture(
 
             detail = await get_salon_detail(
                 page, salon_url, prefecture,
-                trust_prefecture=True, fetch_phone=fetch_phone,
+                # 都道府県検索では詳細の都道府県一致を必須にする
+                # （取れない場合に検索県名を信用すると他県サロンが混入する）
+                trust_prefecture=False, fetch_phone=fetch_phone,
             )
             if not detail.get("matches_target"):
                 if progress:
@@ -740,6 +751,13 @@ async def scrape_prefecture(
                 continue
 
             address = format_address(detail, prefecture)
+            if not address:
+                if progress:
+                    progress.set_message(
+                        f"  ⏭️ {name[:20]} スキップ（住所・都道府県が取得できない）"
+                    )
+                continue
+
             phone = detail.get("phone", "") if fetch_phone else ""
 
             found += 1

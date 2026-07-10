@@ -782,11 +782,13 @@ if not df.empty:
         )
     with col2:
         max_fav = int(df["いいね数"].max()) if len(df) > 0 and not df["いいね数"].isna().all() else 50
+        # 検索時のお気に入り上限を一覧の初期上限にも反映（検索5なのに一覧70表示を防ぐ）
+        default_upper = min(max(max_fav, 1), int(max_likes))
         likes_filter = st.slider(
             "お気に入り数でフィルタ",
             min_value=0,
             max_value=max(max_fav, 1),
-            value=(0, max(max_fav, 1))
+            value=(0, default_upper)
         )
     
     def _filter_by_updated_col(frame: pd.DataFrame) -> pd.DataFrame:
