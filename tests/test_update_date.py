@@ -51,3 +51,17 @@ def test_format_address_does_not_invent_search_prefecture():
         {"prefecture": "大阪府", "city": "大阪市北区", "street": "梅田1-1"},
         "奈良県",
     ) == "大阪府大阪市北区梅田1-1"
+
+
+def test_prefecture_search_keyword_strips_suffix():
+    from urllib import parse as urllib_parse
+
+    from scraper import get_search_url, prefecture_search_keyword
+
+    assert prefecture_search_keyword("大阪府") == "大阪"
+    assert prefecture_search_keyword("東京都") == "東京"
+    assert prefecture_search_keyword("北海道") == "北海道"
+    url = get_search_url("nail", "大阪府")
+    assert "keyword=%E5%A4%A7%E9%98%AA" in url
+    assert "order=updated_datetime" in url
+    assert "大阪府" not in urllib_parse.unquote(url)

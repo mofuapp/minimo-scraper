@@ -154,8 +154,18 @@ SMALL_PREFECTURES = [
 ]
 
 
+def prefecture_search_keyword(prefecture: str) -> str:
+    """ミニモ検索用キーワード（「大阪府」だと0件になるため「大阪」を使う）"""
+    name = (prefecture or "").strip()
+    if name == "北海道":
+        return "北海道"
+    if name.endswith(("都", "道", "府", "県")) and len(name) > 1:
+        return name[:-1]
+    return name
+
+
 def get_list_url(category_key: str, prefecture: str, page_num: int = 1) -> str:
-    """都道府県×カテゴリ一覧URL（モバイルアプリと同じ /list/ 形式）"""
+    """都道府県×カテゴリ一覧URL（参考用。新着コードは無効化されやすい）"""
     cat_code = CATEGORY_CODES[category_key]
     pref_code = PREFECTURE_CODES[prefecture]
     base = f"https://minimodel.jp/list/{cat_code}/{pref_code}/c0/{SORT_NEWEST}"
@@ -163,15 +173,16 @@ def get_list_url(category_key: str, prefecture: str, page_num: int = 1) -> str:
 
 
 def get_search_url(category: str = None, area: str = None) -> str:
-    """検索URLを生成（カテゴリ+都道府県キーワード）"""
+    """検索URLを生成（カテゴリ+都道府県キーワード+新着順）"""
     base_url = "https://minimodel.jp/search?"
     params = []
 
     if category:
         params.append(f"category={category}")
     if area:
-        # area= は結果が全国になるため keyword= を使用
-        encoded_area = urllib.parse.quote(area)
+        # 「大阪府」は0件、「大阪」ならヒットする
+        keyword = prefecture_search_keyword(area)
+        encoded_area = urllib.parse.quote(keyword)
         params.append(f"keyword={encoded_area}")
 
     params.append("order=updated_datetime")
@@ -373,19 +384,33 @@ async def extract_location_from_page(page: Page) -> dict:
     return location
 
 async def click_sort_newest(page: Page) -> bool:
-    """新着順ボタンをクリック"""
+    """新着順に切り替える（URL指定が効かない場合の保険）"""
     try:
+        current = await page.evaluate(
+            """() => {
+                const btn = [...document.querySelectorAll('button')]
+                    .find(b => /順/.test((b.innerText||'').trim()));
+                return btn ? (btn.innerText||'').trim() : '';
+            }"""
+        )
+        if current == "新着順":
+            return True
+
         sort_button = await page.query_selector('button:has-text("おすすめ順")')
+        if not sort_button:
+            sort_button = await page.query_selector('button:has-text("評価順")')
+        if not sort_button:
+            sort_button = await page.query_selector('button:has-text("口コミ数順")')
         if sort_button:
             await sort_button.click()
             await page.wait_for_timeout(500)
-            
+
             new_link = await page.query_selector('a:has-text("新着順")')
             if new_link:
                 await new_link.click()
                 await page.wait_for_timeout(2000)
                 return True
-    except:
+    except Exception:
         pass
     return False
 
@@ -603,27 +628,27 @@ async def scrape_prefecture_category(
     existing_urls: set,
     progress: Optional[ProgressTracker],
 ) -> list[dict]:
-    """1カテゴリ分を /list/ またはキーワード検索で取得"""
+    """1カテゴリ分をキーワード検索（新着順）で取得
+
+    /list/ の新着コードはおすすめ順に落ちるため使わない。
+    「大阪府」キーワードは0件になるので「大阪」で検索する。
+    """
     cat_name = CATEGORIES.get(category_key, category_key)
     all_salons = []
-
-    if category_key in LIST_FALLBACK_CATEGORIES:
-        base_url = get_search_url(category=category_key, area=prefecture)
-        use_list = False
-    else:
-        base_url = get_list_url(category_key, prefecture)
-        use_list = True
+    base_url = get_search_url(category=category_key, area=prefecture)
 
     if progress:
-        progress.set_message(f"  📂 {cat_name}")
+        progress.set_message(
+            f"  📂 {cat_name}（キーワード:{prefecture_search_keyword(prefecture)} / 新着順）"
+        )
 
     for current_page in range(1, max_pages + 1):
-        page_url = get_list_url(category_key, prefecture, current_page) if use_list else get_page_url(base_url, current_page)
+        page_url = get_page_url(base_url, current_page)
 
         await page.goto(page_url, wait_until="domcontentloaded", timeout=20000)
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(2500)
 
-        if not use_list and current_page == 1:
+        if current_page == 1:
             await click_sort_newest(page)
 
         salons = await extract_salons_with_urls(page)
