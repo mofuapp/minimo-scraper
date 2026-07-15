@@ -31,16 +31,20 @@ try:
     clear_all_data,
     clear_last_session,
     dedupe_by_salon_url,
+    drop_bogus_address_rows,
     empty_salon_df,
     import_from_dataframe,
+    is_bogus_invented_address,
     is_ephemeral_host,
     load_data,
     load_last_session,
     normalize_phones_in_df,
     prepare_for_spreadsheet,
+    purge_bogus_addresses,
     restore_from_backup,
     save_data,
     save_last_session,
+    urls_blocking_rescrape,
     )
 except ImportError:
     import importlib.util
@@ -59,16 +63,20 @@ except ImportError:
     clear_all_data = _mod.clear_all_data
     clear_last_session = _mod.clear_last_session
     dedupe_by_salon_url = _mod.dedupe_by_salon_url
+    drop_bogus_address_rows = _mod.drop_bogus_address_rows
     empty_salon_df = _mod.empty_salon_df
     import_from_dataframe = _mod.import_from_dataframe
+    is_bogus_invented_address = _mod.is_bogus_invented_address
     is_ephemeral_host = _mod.is_ephemeral_host
     load_data = _mod.load_data
     load_last_session = _mod.load_last_session
     normalize_phones_in_df = _mod.normalize_phones_in_df
     prepare_for_spreadsheet = _mod.prepare_for_spreadsheet
+    purge_bogus_addresses = _mod.purge_bogus_addresses
     restore_from_backup = _mod.restore_from_backup
     save_data = _mod.save_data
     save_last_session = _mod.save_last_session
+    urls_blocking_rescrape = _mod.urls_blocking_rescrape
 
 
 def finalize_scrape_session(added_rows: list[dict]) -> int:
@@ -635,9 +643,31 @@ except DataLoadError as e:
     st.error(f"データ読み込みエラー: {e}")
     df = empty_salon_df()
 
-existing_urls = set(df["サロンURL"].dropna().tolist())
+# 誤住所（「奈良県 駅名」など）は再取得を妨げない
+existing_urls = urls_blocking_rescrape(df)
+bogus_count = 0
+if not df.empty and "住所" in df.columns:
+    bogus_count = int(df["住所"].apply(is_bogus_invented_address).sum())
 with st.sidebar.expander("💾 バックアップから復元", expanded=df.empty and bool(backup_entries())):
     render_backup_restore("sidebar", compact=True)
+
+if bogus_count > 0:
+    st.warning(
+        f"住所が「県名＋駅名」形式の誤データが **{bogus_count}件** あります。"
+        "（例: 奈良県 四ツ橋駅）。一覧が奈良だらけに見えます。"
+        "下のボタンで削除してから、改めて都道府県を選んで検索してください。"
+    )
+    if st.button("🧹 誤住所データを削除する", type="primary"):
+        try:
+            df, removed = purge_bogus_addresses()
+            existing_urls = urls_blocking_rescrape(df)
+            st.session_state.last_scrape_new = empty_salon_df()
+            st.session_state.last_scrape_urls = []
+            clear_last_session()
+            st.success(f"{removed}件の誤住所データを削除しました。再検索できます。")
+            st.rerun()
+        except Exception as e:
+            st.error(f"削除に失敗しました: {e}")
 
 if "last_scrape_new" not in st.session_state:
     loaded_session = load_last_session()

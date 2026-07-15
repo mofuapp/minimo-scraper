@@ -80,6 +80,63 @@ def normalize_phones_in_df(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def is_bogus_invented_address(address) -> bool:
+    """旧バグで保存された「奈良県 四ツ橋駅」形式の誤住所か
+
+    検索対象県名 + 空白 + 駅名を住所として捏造していた名残。
+    正しい住所は「大阪府泉南市…」のように空白無しで市区町村が続く。
+    （駅名の「中崎町駅」「枚方市駅」に市・町が含まれるため、駅の有無で判定する）
+    """
+    if address is None or (isinstance(address, float) and pd.isna(address)):
+        return False
+    addr = str(address).strip()
+    if not addr or addr.lower() == "nan":
+        return False
+    # 都道府県名だけの行
+    if re.fullmatch(r"(?:北海道|東京都|大阪府|京都府|.+?県)", addr):
+        return True
+    # 県名の直後に空白 = 旧捏造フォーマット（正規の結合住所には空白を入れない）
+    if re.match(r"^(?:北海道|東京都|大阪府|京都府|.+?県)\s+", addr):
+        return True
+    return False
+
+
+def drop_bogus_address_rows(df: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
+    """誤住所行を除去し、(結果DF, 削除件数) を返す"""
+    if df.empty or "住所" not in df.columns:
+        return df, 0
+    mask = df["住所"].apply(is_bogus_invented_address)
+    removed = int(mask.sum())
+    if removed == 0:
+        return df, 0
+    return df.loc[~mask].reset_index(drop=True), removed
+
+
+def urls_blocking_rescrape(df: pd.DataFrame) -> set:
+    """再スクレイプをブロックする既存URL（誤住所行は含めない）"""
+    if df.empty or "サロンURL" not in df.columns:
+        return set()
+    out = df.copy()
+    out["サロンURL"] = out["サロンURL"].astype(str).str.strip()
+    if "住所" in out.columns:
+        out = out[~out["住所"].apply(is_bogus_invented_address)]
+    return set(
+        out["サロンURL"]
+        .dropna()
+        .loc[lambda s: (s != "") & (s != "nan")]
+        .tolist()
+    )
+
+
+def purge_bogus_addresses() -> Tuple[pd.DataFrame, int]:
+    """保存済みの誤住所データを削除して書き戻す"""
+    df = load_data()
+    cleaned, removed = drop_bogus_address_rows(df)
+    if removed:
+        save_data_quiet(cleaned)
+    return cleaned, removed
+
+
 def dedupe_by_salon_url(df: pd.DataFrame, keep: str = "last") -> pd.DataFrame:
     if df.empty or "サロンURL" not in df.columns:
         return df
@@ -296,9 +353,15 @@ def add_new_salons(
     if not new_salons:
         return df, []
 
-    existing = set(df["サロンURL"].dropna().astype(str).str.strip().tolist())
+    working = df.copy()
+    # 誤住所の既存行は正しい住所で上書きできるよう除去対象にする
+    if not working.empty and "住所" in working.columns:
+        working, _ = drop_bogus_address_rows(working)
+
+    existing = urls_blocking_rescrape(working)
     unique: List[dict] = []
     seen_in_batch: set = set()
+    refresh_urls: set = set()
 
     for salon in new_salons:
         url = salon.get("サロンURL")
@@ -308,14 +371,22 @@ def add_new_salons(
         if url in existing or url in seen_in_batch:
             continue
         seen_in_batch.add(url)
+        refresh_urls.add(url)
         row = {col: salon.get(col, "") for col in SALON_COLUMNS}
         unique.append(row)
 
     if not unique:
         return df, []
 
+    # 同URLの誤住所行を元DFからも落としてから結合
+    if not df.empty and "サロンURL" in df.columns:
+        urls = df["サロンURL"].astype(str).str.strip()
+        base = df.loc[~urls.isin(refresh_urls)].copy()
+    else:
+        base = df
+
     new_df = pd.DataFrame(unique)
-    merged = normalize_phones_in_df(pd.concat([df, new_df], ignore_index=True))
+    merged = normalize_phones_in_df(pd.concat([base, new_df], ignore_index=True))
     return dedupe_by_salon_url(merged), unique
 
 

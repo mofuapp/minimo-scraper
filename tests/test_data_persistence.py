@@ -31,7 +31,7 @@ def _sample_rows(n: int = 3) -> pd.DataFrame:
             {
                 "サロン名": f"サロン{i}",
                 "ジャンル": "ネイル",
-                "住所": "大阪府",
+                "住所": "大阪府大阪市北区",
                 "電話番号": f"'06{i:08d}",
                 "サロンURL": f"https://minimodel.jp/r/test{i}",
                 "いいね数": i,
@@ -40,6 +40,80 @@ def _sample_rows(n: int = 3) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def test_is_bogus_invented_address():
+    assert ds.is_bogus_invented_address("奈良県 四ツ橋駅")
+    assert ds.is_bogus_invented_address("大阪府 梅田駅")
+    assert ds.is_bogus_invented_address("奈良県 枚方市駅")
+    assert ds.is_bogus_invented_address("奈良県 中崎町駅")
+    assert ds.is_bogus_invented_address("奈良県")
+    assert not ds.is_bogus_invented_address("大阪府泉南市")
+    assert not ds.is_bogus_invented_address("大阪府大阪市北区梅田1-1")
+    assert not ds.is_bogus_invented_address("")
+
+
+def test_urls_blocking_rescrape_ignores_bogus(isolated_data):
+    df = pd.DataFrame(
+        [
+            {
+                "サロン名": "誤",
+                "ジャンル": "ネイル",
+                "住所": "奈良県 四ツ橋駅",
+                "電話番号": "",
+                "サロンURL": "https://minimodel.jp/r/bad",
+                "いいね数": 1,
+                "最終更新日": "",
+                "取得日時": "2026-06-01 10:00:00",
+            },
+            {
+                "サロン名": "正",
+                "ジャンル": "ネイル",
+                "住所": "大阪府泉南市",
+                "電話番号": "",
+                "サロンURL": "https://minimodel.jp/r/good",
+                "いいね数": 1,
+                "最終更新日": "",
+                "取得日時": "2026-06-01 10:00:01",
+            },
+        ]
+    )
+    assert ds.urls_blocking_rescrape(df) == {"https://minimodel.jp/r/good"}
+
+
+def test_add_new_salons_replaces_bogus_row(isolated_data):
+    old = pd.DataFrame(
+        [
+            {
+                "サロン名": "旧",
+                "ジャンル": "ネイル",
+                "住所": "奈良県 四ツ橋駅",
+                "電話番号": "",
+                "サロンURL": "https://minimodel.jp/r/same",
+                "いいね数": 1,
+                "最終更新日": "",
+                "取得日時": "2026-05-01 10:00:00",
+            }
+        ]
+    )
+    merged, added = ds.add_new_salons(
+        [
+            {
+                "サロン名": "新",
+                "ジャンル": "ネイル",
+                "住所": "大阪府大阪市中央区",
+                "電話番号": "",
+                "サロンURL": "https://minimodel.jp/r/same",
+                "いいね数": 1,
+                "最終更新日": "2026-07-08",
+                "取得日時": "2026-07-15 10:00:00",
+            }
+        ],
+        old,
+    )
+    assert len(added) == 1
+    assert len(merged) == 1
+    assert merged.iloc[0]["住所"] == "大阪府大阪市中央区"
 
 
 def test_save_empty_does_not_wipe_existing(isolated_data):
