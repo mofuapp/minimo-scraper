@@ -68,7 +68,12 @@ def test_prefecture_search_keyword_strips_suffix():
 
 
 def test_filter_area_list_urls():
-    from scraper import filter_area_list_urls, get_prefecture_index_url
+    from scraper import (
+        area_pages_for_count,
+        filter_area_list_urls,
+        get_prefecture_index_url,
+        select_area_entries,
+    )
 
     hrefs = [
         "/list/2/27/c0/0",
@@ -77,11 +82,20 @@ def test_filter_area_list_urls():
         "/list/2/27/102/0",
         "/list/2/28/c60/0",
     ]
+    # 市区町村コード(c*)がある場合は駅エリア(102)を捨てる
     urls = filter_area_list_urls(hrefs, "nail", "大阪府")
-    assert set(urls) == {
-        "https://minimodel.jp/list/2/27/c60/0",
-        "https://minimodel.jp/list/2/27/102/0",
-    }
+    assert urls == ["https://minimodel.jp/list/2/27/c60/0"]
     assert get_prefecture_index_url("nail", "大阪府") == (
         "https://minimodel.jp/list/2/27/c0/0"
     )
+
+    links = [
+        {"href": "/list/2/27/c1/0", "text": "大阪市(1,505件)"},
+        {"href": "/list/2/27/c60/0", "text": "泉南市(11件)"},
+        {"href": "/list/2/27/c4/0", "text": "大阪市此花区(2件)"},
+        {"href": "/list/2/27/116/0", "text": "府中・岸和田(78件)"},
+    ]
+    entries = select_area_entries(links, "nail", "大阪府")
+    assert [e["code"] for e in entries] == ["c4", "c60", "c1"]
+    assert area_pages_for_count(11, 20) == 1
+    assert area_pages_for_count(100, 20) == 5
