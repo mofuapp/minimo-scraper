@@ -67,6 +67,23 @@ def test_prefecture_search_keyword_strips_suffix():
     assert "大阪府" not in urllib_parse.unquote(url)
 
 
+def test_normalize_prefecture_short_names():
+    from scraper import normalize_prefecture, order_prefectures_for_scrape
+
+    assert normalize_prefecture("京都") == "京都府"
+    assert normalize_prefecture("大阪") == "大阪府"
+    assert normalize_prefecture("東京") == "東京都"
+    assert normalize_prefecture("奈良") == "奈良県"
+    assert normalize_prefecture("兵庫") == "兵庫県"
+    assert normalize_prefecture("京都府") == "京都府"
+    # 旧バグ: replace('都') で「京都」→「京」になっていた
+    assert normalize_prefecture("京都") != "京"
+
+    assert order_prefectures_for_scrape(
+        ["大阪府", "京都府", "奈良県"]
+    ) == ["奈良県", "京都府", "大阪府"]
+
+
 def test_filter_area_list_urls():
     from scraper import (
         area_pages_for_count,

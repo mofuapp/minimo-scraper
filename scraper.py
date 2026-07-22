@@ -258,18 +258,56 @@ def get_search_url(category: str = None, area: str = None) -> str:
     return base_url + "&".join(params) if params else base_url
 
 
+# 複数県選択時は件数の少ない県から回す（大阪が先だと京都・兵庫が時間切れになる）
+PREFECTURE_SCRAPE_PRIORITY = {
+    "和歌山県": 10,
+    "滋賀県": 20,
+    "奈良県": 30,
+    "京都府": 40,
+    "兵庫県": 50,
+    "大阪府": 90,
+    "東京都": 95,
+    "神奈川県": 92,
+    "愛知県": 91,
+    "福岡県": 88,
+}
+
+
+def order_prefectures_for_scrape(prefectures: list[str]) -> list[str]:
+    """スクレイプ順を軽い県→重い県に並べ替える"""
+    seen = set()
+    ordered = []
+    for pref in prefectures:
+        if pref and pref not in seen:
+            seen.add(pref)
+            ordered.append(pref)
+    ordered.sort(key=lambda p: (PREFECTURE_SCRAPE_PRIORITY.get(p, 70), p))
+    return ordered
+
+
 def normalize_prefecture(name: str) -> str:
-    """パンくず等の短い地名を都道府県名に正規化"""
+    """パンくず等の短い地名を都道府県名に正規化
+
+    注意: 「京都」.replace('都','') すると「京」になるため、
+    末尾の都・道・府・県だけを剥がす。
+    """
     if not name:
         return ""
     name = name.strip().split("\n")[0].strip()
     if name in PREFECTURES:
         return name
-    if name == "東京":
-        return "東京都"
+
+    short_map = {
+        "東京": "東京都",
+        "大阪": "大阪府",
+        "京都": "京都府",
+        "北海": "北海道",
+    }
+    if name in short_map:
+        return short_map[name]
+
     for pref in PREFECTURES:
-        base = pref.replace("県", "").replace("府", "").replace("都", "")
-        if name == base:
+        if pref.endswith(("都", "道", "府", "県")) and name == pref[:-1]:
             return pref
     return name
 
@@ -369,6 +407,25 @@ def _extract_full_address_from_body(body: str) -> str:
     if zip_match:
         return zip_match.group(0).strip()
 
+    # 地図リンクが無いプライベートサロン向け（例: 京都府京都市南区吉祥院…）
+    for line in body.split("\n"):
+        line = line.strip()
+        if len(line) < 8 or len(line) > 80:
+            continue
+        if not re.match(r"^(?:北海道|東京都|大阪府|京都府|.+?[都道府県])", line):
+            continue
+        if not re.search(r"[市区町村郡]", line):
+            continue
+        if any(
+            x in line
+            for x in (
+                "おすすめ", "一覧", "行ける", "募集", "予約", "更新",
+                "モデル", "明日", "サロン電話", "詳細は",
+            )
+        ):
+            continue
+        return line
+
     return ""
 
 
@@ -404,7 +461,11 @@ async def extract_location_from_page(page: Page) -> dict:
 
         if "トップ" in links:
             top_idx = links.index("トップ")
-            breadcrumb = links[top_idx + 1: top_idx + 10]
+            # パンくずがタブの「トップ」で途切れないよう、都道府県の直後まで見る
+            breadcrumb = links[top_idx + 1: top_idx + 8]
+            # 2つ目の「トップ」（ページ内タブ）以降はパンくずではない
+            if "トップ" in breadcrumb:
+                breadcrumb = breadcrumb[: breadcrumb.index("トップ")]
 
             pref_idx = -1
             for i, t in enumerate(breadcrumb):
@@ -423,7 +484,7 @@ async def extract_location_from_page(page: Page) -> dict:
                         not city
                         and normalize_prefecture(t) not in PREFECTURES
                         and len(t) <= 20
-                        and t not in {"フォト", "メニュー", "口コミ"}
+                        and t not in {"フォト", "メニュー", "口コミ", "ネイルサロン"}
                     ):
                         city = t
 
@@ -1230,8 +1291,8 @@ async def scrape_minimo(
                     )
                     all_results.extend(results)
             else:
-                # 都道府県検索モード
-                for pref in prefectures:
+                # 都道府県検索モード（軽い県から）
+                for pref in order_prefectures_for_scrape(prefectures):
                     results = await scrape_prefecture(
                         page=page,
                         prefecture=pref,
